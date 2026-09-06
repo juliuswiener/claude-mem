@@ -123,6 +123,7 @@ export class SessionStore {
     this.initializeSyncHubLaunchBaseline();
     this.normalizeConceptTags();
     this.ensureSDKSessionsObservedColumns();
+    this.addObservationWhereWhyColumns();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1725,6 +1726,25 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(50, new Date().toISOString());
   }
 
+  // `where` is a SQL keyword, so the column is named where_field; the JS/TS
+  // level keeps the property named `where` (no such restriction there).
+  private addObservationWhereWhyColumns(): void {
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasWhere = columns.some(col => col.name === 'where_field');
+    const hasWhy = columns.some(col => col.name === 'why');
+
+    if (hasWhere && hasWhy) return;
+
+    if (!hasWhere) {
+      this.db.run('ALTER TABLE observations ADD COLUMN where_field TEXT');
+    }
+    if (!hasWhy) {
+      this.db.run('ALTER TABLE observations ADD COLUMN why TEXT');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(51, new Date().toISOString());
+  }
+
   private ensureMergedIntoProjectColumns(): void {
     const obsCols = this.db
       .query('PRAGMA table_info(observations)')
@@ -2550,8 +2570,10 @@ export class SessionStore {
       type: string;
       title: string | null;
       subtitle: string | null;
+      where?: string | null;
       facts: string[];
       narrative: string | null;
+      why?: string | null;
       concepts: string[];
       files_read: string[];
       files_modified: string[];
@@ -2631,8 +2653,10 @@ export class SessionStore {
       type: string;
       title: string | null;
       subtitle: string | null;
+      where?: string | null;
       facts: string[];
       narrative: string | null;
+      why?: string | null;
       concepts: string[];
       files_read: string[];
       files_modified: string[];
@@ -2661,10 +2685,10 @@ export class SessionStore {
 
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
-        (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
+        (memory_session_id, project, type, title, subtitle, where_field, facts, narrative, why, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
          generated_by_model, metadata)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
@@ -2680,8 +2704,10 @@ export class SessionStore {
           observation.type,
           observation.title,
           observation.subtitle,
+          observation.where ?? null,
           JSON.stringify(observation.facts),
           observation.narrative,
+          observation.why ?? null,
           JSON.stringify(observation.concepts),
           JSON.stringify(observation.files_read),
           JSON.stringify(observation.files_modified),

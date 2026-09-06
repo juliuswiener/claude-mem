@@ -144,6 +144,9 @@ export function renderHumanFullObservation(
   if (detailField) {
     output.push(`    ${colors.dim}${detailField}${colors.reset}`);
   }
+  if (obs.why) {
+    output.push(`    ${colors.dim}Why: ${obs.why}${colors.reset}`);
+  }
   if (readPart || discoveryPart) {
     output.push(`    ${readPart} ${discoveryPart}`);
   }

@@ -110,6 +110,9 @@ export function renderAgentFullObservation(
   if (detailField) {
     output.push(detailField);
   }
+  if (obs.why) {
+    output.push(`Why: ${obs.why}`);
+  }
 
   const tokenParts: string[] = [];
   if (config.showReadTokens) {

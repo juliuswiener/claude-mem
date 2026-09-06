@@ -63,6 +63,36 @@ describe('parseAgentXml — observations', () => {
     expect(result[0].narrative).toBe('Patched the null pointer dereference in session handler.');
   });
 
+  it('parses where and why as fields distinct from narrative', () => {
+    const xml = `<observation>
+      <type>bugfix</type>
+      <title>Fixed session cwd resolution</title>
+      <where>src/services/worker/agents/ResponseProcessor.ts</where>
+      <narrative>Attribution now resolves per compression cycle instead of once per session.</narrative>
+      <why>Sessions that cd into a second repo were misattributing observations to the first repo.</why>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].where).toBe('src/services/worker/agents/ResponseProcessor.ts');
+    expect(result[0].why).toBe('Sessions that cd into a second repo were misattributing observations to the first repo.');
+    expect(result[0].narrative).toBe('Attribution now resolves per compression cycle instead of once per session.');
+  });
+
+  it('leaves where and why null when the tags are absent', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <narrative>Observed existing behavior with no location or rationale supplied.</narrative>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].where).toBeNull();
+    expect(result[0].why).toBeNull();
+  });
+
   it('returns a populated observation when only facts are present', () => {
     const xml = `<observation>
       <type>discovery</type>

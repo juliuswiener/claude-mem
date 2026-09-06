@@ -29,9 +29,11 @@ export interface ModePrompts {
   xml_title_placeholder: string;           
   xml_subtitle_placeholder: string;        
   xml_fact_placeholder: string;            
-  xml_narrative_placeholder: string;       
-  xml_concept_placeholder: string;         
-  xml_file_placeholder: string;            
+  xml_narrative_placeholder: string;
+  xml_where_placeholder: string;
+  xml_why_placeholder: string;
+  xml_concept_placeholder: string;
+  xml_file_placeholder: string;
 
   xml_summary_request_placeholder: string;      
   xml_summary_investigated_placeholder: string; 

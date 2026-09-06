@@ -7,9 +7,11 @@ export interface ObservationRow {
   type: 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change';
   title: string | null;
   subtitle: string | null;
-  facts: string | null; 
+  where_field: string | null;
+  facts: string | null;
   narrative: string | null;
-  concepts: string | null; 
+  why: string | null;
+  concepts: string | null;
   files_read: string | null; 
   files_modified: string | null; 
   prompt_number: number | null;

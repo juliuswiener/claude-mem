@@ -149,6 +149,55 @@ describe('SessionStore', () => {
     expect(new Date(stored!.created_at).getTime()).toBe(pastTimestamp);
   });
 
+  it('round-trips where (location) and why (rationale) through storage and retrieval', () => {
+    const claudeId = 'claude-sess-where-why';
+    const memoryId = 'memory-sess-where-why';
+    const sdkId = store.createSDKSession(claudeId, 'test-project', 'initial prompt');
+    store.updateMemorySessionId(sdkId, memoryId);
+
+    const obs = {
+      type: 'bugfix',
+      title: 'Fixed attribution bug',
+      subtitle: null,
+      where: 'src/services/worker/agents/ResponseProcessor.ts',
+      facts: [],
+      narrative: 'Attribution now resolves per compression cycle.',
+      why: 'Sessions working across multiple repos were misattributing observations.',
+      concepts: [],
+      files_read: [],
+      files_modified: []
+    };
+
+    const result = store.storeObservation(memoryId, 'test-project', obs, 1);
+
+    const stored = store.getObservationById(result.id);
+    expect(stored).not.toBeNull();
+    expect(stored?.where_field).toBe('src/services/worker/agents/ResponseProcessor.ts');
+    expect(stored?.why).toBe('Sessions working across multiple repos were misattributing observations.');
+  });
+
+  it('stores where/why as null when omitted (both fields are optional at the storage layer)', () => {
+    const claudeId = 'claude-sess-where-why-null';
+    const memoryId = 'memory-sess-where-why-null';
+    const sdkId = store.createSDKSession(claudeId, 'test-project', 'initial prompt');
+    store.updateMemorySessionId(sdkId, memoryId);
+
+    const result = store.storeObservation(memoryId, 'test-project', {
+      type: 'discovery',
+      title: 'No where/why supplied',
+      subtitle: null,
+      facts: [],
+      narrative: 'Legacy-shaped observation without the new fields.',
+      concepts: [],
+      files_read: [],
+      files_modified: []
+    }, 1);
+
+    const stored = store.getObservationById(result.id);
+    expect(stored?.where_field).toBeNull();
+    expect(stored?.why).toBeNull();
+  });
+
   it('sets session identity (memory_session_id + worker_port) before an observation can be accepted (#2533)', () => {
     const claudeId = 'claude-identity-1';
     const memoryId = 'memory-identity-1';

@@ -16,8 +16,10 @@ export interface ParsedObservation {
   type: string;
   title: string | null;
   subtitle: string | null;
+  where: string | null;
   facts: string[];
   narrative: string | null;
+  why: string | null;
   concepts: string[];
   files_read: string[];
   files_modified: string[];
@@ -96,7 +98,9 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
     const type = extractField(obsContent, 'type');
     const title = extractField(obsContent, 'title');
     const subtitle = extractField(obsContent, 'subtitle');
+    const where = extractField(obsContent, 'where');
     const narrative = extractField(obsContent, 'narrative');
+    const why = extractField(obsContent, 'why');
     const facts = extractArrayElements(obsContent, 'facts', 'fact');
     const concepts = extractArrayElements(obsContent, 'concepts', 'concept');
     const files_read = extractArrayElements(obsContent, 'files_read', 'file');
@@ -146,8 +150,10 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
       type: finalType,
       title,
       subtitle,
+      where,
       facts,
       narrative,
+      why,
       concepts: cleanedConcepts,
       files_read,
       files_modified

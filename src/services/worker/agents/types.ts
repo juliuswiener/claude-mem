@@ -14,9 +14,11 @@ export interface ObservationSSEPayload {
   type: string;
   title: string | null;
   subtitle: string | null;
+  where: string | null;
   text: string | null;
   narrative: string | null;
-  facts: string;  
+  why: string | null;
+  facts: string;
   concepts: string;  
   files_read: string;  
   files_modified: string;  

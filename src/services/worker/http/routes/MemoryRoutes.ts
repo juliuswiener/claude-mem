@@ -47,8 +47,10 @@ export class MemoryRoutes extends BaseRouteHandler {
       type: 'discovery',  // Use existing valid type
       title: title || text.substring(0, 60).trim() + (text.length > 60 ? '...' : ''),
       subtitle: 'Manual memory',
+      where: null,
       facts: [] as string[],
       narrative: text,
+      why: null,
       concepts: [] as string[],
       files_read: [] as string[],
       files_modified: [] as string[],

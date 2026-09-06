@@ -31,6 +31,8 @@ export interface ObservationRecord {
   created_at: string;
   created_at_epoch: number;
   title?: string;
+  where_field?: string | null;
+  why?: string | null;
   concept?: string;
   prompt_number?: number;
   discovery_tokens?: number;

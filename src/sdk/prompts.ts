@@ -31,6 +31,7 @@ function observationSkeleton(mode: ModeConfig): string {
   -->
   <title>${mode.prompts.xml_title_placeholder}</title>
   <subtitle>${mode.prompts.xml_subtitle_placeholder}</subtitle>
+  <where>${mode.prompts.xml_where_placeholder}</where>
   <facts>
     <fact>${mode.prompts.xml_fact_placeholder}</fact>
     <fact>${mode.prompts.xml_fact_placeholder}</fact>
@@ -40,6 +41,7 @@ function observationSkeleton(mode: ModeConfig): string {
     ${mode.prompts.field_guidance}
   -->
   <narrative>${mode.prompts.xml_narrative_placeholder}</narrative>
+  <why>${mode.prompts.xml_why_placeholder}</why>
   <concepts>
     <concept>${mode.prompts.xml_concept_placeholder}</concept>
     <concept>${mode.prompts.xml_concept_placeholder}</concept>

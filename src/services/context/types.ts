@@ -36,7 +36,9 @@ export interface Observation {
   type: string;
   title: string | null;
   subtitle: string | null;
+  where: string | null;
   narrative: string | null;
+  why: string | null;
   facts: string | null;
   concepts: string | null;
   files_read: string | null;

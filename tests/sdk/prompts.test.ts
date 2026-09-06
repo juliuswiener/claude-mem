@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'bun:test';
 
-import { buildObservationPrompt } from '../../src/sdk/prompts.js';
+import { buildObservationPrompt, buildInitPrompt } from '../../src/sdk/prompts.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
+
+describe('buildInitPrompt observation skeleton', () => {
+  it('requires a where (location) and a why (rationale) field distinct from narrative', () => {
+    const mode = ModeManager.getInstance().loadMode('code');
+    const prompt = buildInitPrompt('test-project', 'session-1', 'Fix the bug', mode);
+
+    expect(prompt).toContain('<where>');
+    expect(prompt).toContain(mode.prompts.xml_where_placeholder);
+    expect(prompt).toContain('<why>');
+    expect(prompt).toContain(mode.prompts.xml_why_placeholder);
+    // where/why are separate tags from narrative, not folded into it
+    expect(prompt.indexOf('<where>')).not.toBe(-1);
+    expect(prompt.indexOf('<why>')).toBeGreaterThan(prompt.indexOf('<narrative>'));
+  });
+});
 
 describe('buildObservationPrompt', () => {
   it('instructs the observer to avoid prose skip responses', () => {
