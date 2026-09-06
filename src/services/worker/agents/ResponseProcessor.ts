@@ -23,6 +23,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
+import { getProjectContext } from '../../../utils/project-name.js';
 
 type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input'>;
 
@@ -261,6 +262,30 @@ function mergeFileLists(primary: string[], secondary: string[]): string[] {
   return dedupeStable([...primary, ...secondary]);
 }
 
+// session.project is resolved once, at session-init time, from the cwd the
+// session *started* in. A single observer compression cycle can carry tool
+// calls issued from a different cwd (e.g. the user cd'd into a sibling repo
+// mid-session), so stamping every observation with the stale session-wide
+// project silently misattributes them. Re-resolve per compression cycle from
+// the most recent claimed tool call's own cwd instead; fall back to the
+// session project when no claimed message carries one.
+export function resolveObservationProject(
+  messages: ReadonlyArray<Pick<PendingMessage, 'type' | 'cwd'>>,
+  fallbackProject: string
+): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.type !== 'observation') {
+      continue;
+    }
+    const cwd = typeof message.cwd === 'string' ? message.cwd.trim() : '';
+    if (cwd) {
+      return getProjectContext(cwd).primary;
+    }
+  }
+  return fallbackProject;
+}
+
 export interface ResponseContext {
   project: string;
   promptNumber: number;
@@ -425,6 +450,10 @@ export async function processAgentResponse(
   const claimedMessages = sessionManager.getClaimedMessages(session.sessionDbId);
   const fileEvidence = extractObservationFileEvidence(claimedMessages);
   const sanitizedObservations = sanitizeObservationFiles(observations, fileEvidence);
+  // Attribute this batch to the git root of the tool cwd it actually ran in,
+  // not the cwd the session happened to start in — see resolveObservationProject.
+  const observationProject = resolveObservationProject(claimedMessages, context.project);
+  const observationContext: ResponseContext = { ...context, project: observationProject };
 
   const sessionStore = dbManager.getSessionStore();
   sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId, getWorkerPort());
@@ -444,7 +473,7 @@ export async function processAgentResponse(
   try {
     result = sessionStore.storeObservations(
       session.memorySessionId,
-      context.project,
+      observationProject,
       labeledObservations,
       summaryForStore,
       context.promptNumber,
@@ -547,7 +576,7 @@ export async function processAgentResponse(
   void notifyTelegram({
     observations: labeledObservations,
     observationIds: result.observationIds,
-    project: context.project,
+    project: observationProject,
     memorySessionId: session.memorySessionId,
   });
 
@@ -555,7 +584,7 @@ export async function processAgentResponse(
     labeledObservations,
     result,
     session,
-    context,
+    observationContext,
     dbManager,
     worker,
     agentName,
@@ -567,7 +596,7 @@ export async function processAgentResponse(
     summaryForStore,
     result,
     session,
-    context,
+    observationContext,
     dbManager,
     worker,
     agentName
