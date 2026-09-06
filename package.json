@@ -26,18 +26,13 @@
     "url": "https://github.com/thedotmack/claude-mem/issues"
   },
   "type": "module",
-  "bin": {
-    "claude-mem": "./dist/npx-cli/index.js"
-  },
   "exports": {
     "./modes/*": "./plugin/modes/*"
   },
   "files": [
     "dist",
     ".agents/plugins/marketplace.json",
-    ".codex-plugin",
     "plugin/.claude-plugin",
-    "plugin/.codex-plugin",
     "plugin/.mcp.json",
     "plugin/package.json",
     "plugin/bun.lock",
@@ -46,8 +41,6 @@
     "plugin/scripts/*.js",
     "plugin/scripts/*.cjs",
     "plugin/sqlite",
-    "plugin/skills",
-    "plugin/ui",
     "openclaw"
   ],
   "engines": {

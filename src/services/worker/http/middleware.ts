@@ -7,7 +7,7 @@ import {
   hasForwardedClientHeaders,
   isLocalhost,
   parseBearerToken,
-} from '../../../server/middleware/request-auth-helpers.js';
+} from '../../../shared/request-auth-helpers.js';
 import { logger } from '../../../utils/logger.js';
 
 export function createMiddleware(): RequestHandler[] {

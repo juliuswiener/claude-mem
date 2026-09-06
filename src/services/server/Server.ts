@@ -20,7 +20,6 @@ import { flushResponseThen } from './flushResponseThen.js';
 import { getUptimeSeconds } from '../../shared/uptime.js';
 import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../../shared/dependency-health.js';
 import { globalRateLimitStore } from '../worker/RateLimitStore.js';
-import type { ObservationQueueHealth } from '../../server/queue/queue-health-types.js';
 
 const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
 const INSTRUCTIONS_OPERATIONS_DIR: string = path.join(INSTRUCTIONS_BASE_DIR, 'operations');
@@ -96,7 +95,6 @@ export interface ServerOptions {
   getAiStatus: () => AiStatus;
   getDependencyHealth?: () => DependencyHealthSnapshot;
   preBodyParserRoutes?: RouteHandler[];
-  getQueueHealth?: () => ObservationQueueHealth | null | Promise<ObservationQueueHealth | null>;
   // #2572 — when true, install a minimal set of hardening response headers
   // (the same headers helmet's defaults emit) before any route runs. Opt-in so
   // the in-plugin worker runtime is unchanged; the server runtime sets it.
@@ -242,15 +240,11 @@ export class Server {
 
   private setupCoreRoutes(): void {
     this.app.get('/api/health', async (_req: Request, res: Response) => {
-      const queueHealth = this.options.getQueueHealth
-        ? await this.options.getQueueHealth()
-        : null;
-      const queueDegraded = queueHealth?.engine === 'bullmq' && queueHealth.redis.status === 'error';
       const dependencyHealth = this.options.getDependencyHealth
         ? this.options.getDependencyHealth()
         : snapshotDependencyHealth();
-      res.status(queueDegraded ? 503 : 200).json({
-        status: queueDegraded ? 'degraded' : 'ok',
+      res.status(200).json({
+        status: 'ok',
         ...(this.options.runtime ? { runtime: this.options.runtime } : {}),
         version: BUILT_IN_VERSION,
         workerPath: this.options.workerPath,
@@ -264,7 +258,6 @@ export class Server {
         ai: this.options.getAiStatus(),
         dependencies: dependencyHealth,
         rateLimits: globalRateLimitStore.getMostRecentByWindow(),
-        ...(queueHealth ? { queue: queueHealth } : {}),
       });
     });
 

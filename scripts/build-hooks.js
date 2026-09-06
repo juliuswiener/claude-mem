@@ -12,11 +12,6 @@ const WORKER_SERVICE = {
   source: 'src/services/worker-service.ts'
 };
 
-const SERVER_SERVICE = {
-  name: 'server-service',
-  source: 'src/server/runtime/ServerService.ts'
-};
-
 const MCP_SERVER = {
   name: 'mcp-server',
   source: 'src/servers/mcp-server.ts'
@@ -25,11 +20,6 @@ const MCP_SERVER = {
 const CONTEXT_GENERATOR = {
   name: 'context-generator',
   source: 'src/services/context-generator.ts'
-};
-
-const TRANSCRIPT_WATCHER = {
-  name: 'transcript-watcher',
-  source: 'src/services/transcripts/transcript-watcher-entry.ts'
 };
 
 function stripHardcodedDirname(filePath) {
@@ -62,22 +52,13 @@ function stripHardcodedDirname(filePath) {
  * #1215, #1533). See src/build/hook-shell-template.ts and CLAUDE.md →
  * "Spawn-Contract Resolution".
  */
-function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
+function shellTemplateManifest(buildShellCommand) {
   const ccTrailing = (...tail) => [
     'node', '"$_P/scripts/bun-runner.js"', '"$_P/scripts/worker-service.cjs"', ...tail,
   ];
   const claudeHook = (tail, extra = {}) => buildShellCommand({
     host: 'claude-code', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
     trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', ...extra,
-  });
-  const codexHook = (tail) => buildShellCommand({
-    host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-    trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
-    extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
-  });
-  const codexHookPair = (tail) => ({
-    command: codexHook(tail),
-    commandWindows: buildCodexWindowsCommand(tail),
   });
 
   return {
@@ -101,16 +82,6 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
         'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
         'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
         'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
-      },
-    },
-    'plugin/hooks/codex-hooks.json': {
-      kind: 'hooks',
-      commands: {
-        'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
-        'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
-        'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
-        'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
-        'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
       },
     },
     'plugin/.mcp.json': {
@@ -151,9 +122,9 @@ async function verifyShellTemplateCanonical() {
   });
   const moduleSource = bundled.outputFiles[0].text;
   const dataUrl = 'data:text/javascript;base64,' + Buffer.from(moduleSource).toString('base64');
-  const { buildShellCommand, buildCodexWindowsCommand } = await import(dataUrl);
+  const { buildShellCommand } = await import(dataUrl);
 
-  const manifest = shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand);
+  const manifest = shellTemplateManifest(buildShellCommand);
 
   // The regeneration mode the mismatch errors point at: after an intentional
   // generator change, rewrite the committed launcher strings from the same
@@ -245,13 +216,9 @@ async function buildHooks() {
 
     console.log('\n📦 Preparing output directories...');
     const hooksDir = 'plugin/scripts';
-    const uiDir = 'plugin/ui';
 
     if (!fs.existsSync(hooksDir)) {
       fs.mkdirSync(hooksDir, { recursive: true });
-    }
-    if (!fs.existsSync(uiDir)) {
-      fs.mkdirSync(uiDir, { recursive: true });
     }
     console.log('✓ Output directories ready');
 
@@ -303,19 +270,6 @@ async function buildHooks() {
     };
     fs.writeFileSync('plugin/package.json', JSON.stringify(pluginPackageJson, null, 2) + '\n');
     console.log('✓ plugin/package.json generated');
-
-    console.log('\n📋 Building React viewer...');
-    const { spawn } = await import('child_process');
-    const viewerBuild = spawn('node', ['scripts/build-viewer.js'], { stdio: 'inherit' });
-    await new Promise((resolve, reject) => {
-      viewerBuild.on('exit', (code) => {
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new Error(`Viewer build failed with exit code ${code}`));
-        }
-      });
-    });
 
     console.log(`\n🔧 Building worker service...`);
     await build({
@@ -425,38 +379,6 @@ async function buildHooks() {
       console.log(`✓ ${mod.out} built (${(fs.statSync(mod.out).size / 1024).toFixed(2)} KB)`);
     }
 
-    console.log(`\n🔧 Building server beta service...`);
-    await build({
-      entryPoints: [SERVER_SERVICE.source],
-      bundle: true,
-      platform: 'node',
-      target: 'node18',
-      format: 'cjs',
-      outfile: `${hooksDir}/${SERVER_SERVICE.name}.cjs`,
-      minify: true,
-      logLevel: 'error',
-      external: [
-        'bun:sqlite',
-        'zod',
-      ],
-      define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
-      },
-      banner: {
-        js: [
-          '#!/usr/bin/env bun',
-          'var __filename = __filename || require("node:path").resolve(process.argv[1] || "");',
-          'var __dirname = __dirname || require("node:path").dirname(__filename);'
-        ].join('\n')
-      }
-    });
-
-    stripHardcodedDirname(`${hooksDir}/${SERVER_SERVICE.name}.cjs`);
-
-    fs.chmodSync(`${hooksDir}/${SERVER_SERVICE.name}.cjs`, 0o755);
-    const serverStats = fs.statSync(`${hooksDir}/${SERVER_SERVICE.name}.cjs`);
-    console.log(`✓ server-service built (${(serverStats.size / 1024).toFixed(2)} KB)`);
-
     console.log(`\n🔧 Building MCP server...`);
     await build({
       entryPoints: [MCP_SERVER.source],
@@ -553,73 +475,6 @@ async function buildHooks() {
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
 
-    console.log(`\n🔧 Building transcript watcher...`);
-    await build({
-      entryPoints: [TRANSCRIPT_WATCHER.source],
-      bundle: true,
-      platform: 'node',
-      target: 'node18',
-      format: 'cjs',
-      outfile: `${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`,
-      minify: true,
-      logLevel: 'error',
-      // Externalize zod for consistency with worker-service / server-beta-service —
-      // any zod usage in the processor.ts import chain should resolve at runtime
-      // against plugin/node_modules instead of being inlined (avoids duplicate-
-      // instance hazards and keeps the bundle slim).
-      external: ['bun:sqlite', 'zod'],
-      define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
-      },
-      banner: {
-        js: '#!/usr/bin/env bun'
-      }
-    });
-
-    stripHardcodedDirname(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`);
-
-    fs.chmodSync(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`, 0o755);
-    const transcriptWatcherStats = fs.statSync(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`);
-    console.log(`✓ transcript-watcher built (${(transcriptWatcherStats.size / 1024).toFixed(2)} KB)`);
-
-    // Advisory only — the watcher is meant to be a thin file-tail loop.
-    const TRANSCRIPT_WATCHER_MAX_BYTES = 200 * 1024;
-    if (transcriptWatcherStats.size > TRANSCRIPT_WATCHER_MAX_BYTES) {
-      console.warn(
-        `⚠️  transcript-watcher.cjs is ${(transcriptWatcherStats.size / 1024).toFixed(2)} KB (advisory budget ${(TRANSCRIPT_WATCHER_MAX_BYTES / 1024).toFixed(0)} KB). If this jumped unexpectedly, check src/services/transcripts/processor.ts and watcher.ts for heavy imports.`
-      );
-    }
-
-    console.log(`\n🔧 Building NPX CLI...`);
-    const npxCliOutDir = 'dist/npx-cli';
-    if (!fs.existsSync(npxCliOutDir)) {
-      fs.mkdirSync(npxCliOutDir, { recursive: true });
-    }
-    await build({
-      entryPoints: ['src/npx-cli/index.ts'],
-      bundle: true,
-      platform: 'node',
-      target: 'node18',
-      format: 'esm',
-      outfile: `${npxCliOutDir}/index.js`,
-      banner: { js: '#!/usr/bin/env node' },
-      minify: true,
-      logLevel: 'error',
-      external: [
-        'fs', 'fs/promises', 'path', 'os', 'child_process', 'url',
-        'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
-        'buffer', 'querystring', 'readline', 'tty', 'assert',
-        'bun:sqlite',
-      ],
-      define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
-      },
-    });
-
-    fs.chmodSync(`${npxCliOutDir}/index.js`, 0o755);
-    const npxCliStats = fs.statSync(`${npxCliOutDir}/index.js`);
-    console.log(`✓ npx-cli built (${(npxCliStats.size / 1024).toFixed(2)} KB)`);
-
     if (fs.existsSync('openclaw/src/index.ts')) {
       console.log(`\n🔧 Building OpenClaw plugin...`);
       const openclawOutDir = 'openclaw/dist';
@@ -670,59 +525,19 @@ async function buildHooks() {
       console.log(`✓ opencode plugin built (${(opencodeStats.size / 1024).toFixed(2)} KB)`);
     }
 
-    console.log('\n📋 Copying onboarding explainer to plugin tree...');
-    const onboardingExplainerSrc = 'src/services/worker/onboarding-explainer.md';
-    const onboardingExplainerDst = 'plugin/skills/how-it-works/onboarding-explainer.md';
-    if (!fs.existsSync(onboardingExplainerSrc)) {
-      throw new Error(`Missing onboarding explainer source: ${onboardingExplainerSrc}`);
-    }
-    fs.mkdirSync(path.dirname(onboardingExplainerDst), { recursive: true });
-    fs.copyFileSync(onboardingExplainerSrc, onboardingExplainerDst);
-    console.log(`✓ Copied ${onboardingExplainerSrc} → ${onboardingExplainerDst}`);
-
     console.log('\n📋 Verifying distribution files...');
-    const validCodexHookEvents = new Set([
-      'SessionStart',
-      'UserPromptSubmit',
-      'PreToolUse',
-      'PermissionRequest',
-      'PostToolUse',
-      'Stop',
-    ]);
     const requiredDistributionFiles = [
-      'plugin/skills/mem-search/SKILL.md',
-      'plugin/skills/mode-creator/SKILL.md',
-      'plugin/skills/mode-creator/scripts/install-mode.mjs',
-      'plugin/skills/mode-creator/scripts/configure-telegram.mjs',
-      'plugin/skills/smart-explore/SKILL.md',
-      'plugin/skills/how-it-works/SKILL.md',
-      'plugin/skills/how-it-works/onboarding-explainer.md',
       'plugin/hooks/hooks.json',
-      'plugin/hooks/codex-hooks.json',
       'plugin/scripts/bun-runner.js',
       'plugin/sqlite/SessionStore.js',
       'plugin/sqlite/observations/files.js',
       'plugin/.claude-plugin/plugin.json',
-      'plugin/.codex-plugin/plugin.json',
       'plugin/.mcp.json',
-      '.codex-plugin/plugin.json',
       '.agents/plugins/marketplace.json',
     ];
     for (const filePath of requiredDistributionFiles) {
       if (!fs.existsSync(filePath)) {
         throw new Error(`Missing required distribution file: ${filePath}`);
-      }
-    }
-    const codexHooks = JSON.parse(fs.readFileSync('plugin/hooks/codex-hooks.json', 'utf-8'));
-    const validCodexHookRootKeys = new Set(['hooks']);
-    for (const rootKey of Object.keys(codexHooks)) {
-      if (!validCodexHookRootKeys.has(rootKey)) {
-        throw new Error(`plugin/hooks/codex-hooks.json contains unsupported Codex root key: ${rootKey}`);
-      }
-    }
-    for (const eventName of Object.keys(codexHooks.hooks ?? {})) {
-      if (!validCodexHookEvents.has(eventName)) {
-        throw new Error(`plugin/hooks/codex-hooks.json contains unknown Codex hook event: ${eventName}`);
       }
     }
     const codexMarketplace = JSON.parse(fs.readFileSync('.agents/plugins/marketplace.json', 'utf-8'));
@@ -745,12 +560,8 @@ async function buildHooks() {
     console.log('\n✅ All build targets compiled successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Worker: worker-service.cjs`);
-    console.log(`   - Server: server-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log(`   - Context Generator: context-generator.cjs`);
-    console.log(`   - Transcript Watcher: transcript-watcher.cjs`);
-    console.log(`   Output: ${npxCliOutDir}/`);
-    console.log(`   - NPX CLI: index.js`);
     if (fs.existsSync('openclaw/dist/index.js')) {
       console.log(`   Output: openclaw/dist/`);
       console.log(`   - OpenClaw Plugin: index.js`);

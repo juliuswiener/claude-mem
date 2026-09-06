@@ -1,15 +1,13 @@
 
 import path from 'path';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
-import { spawn } from 'child_process';
 import { pathToFileURL } from 'url';
-import type { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
-import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
+import { DATA_DIR, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
@@ -17,7 +15,6 @@ import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
-import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
@@ -59,15 +56,6 @@ import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
 import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos, formatAdoptionErrors } from './infrastructure/WorktreeAdoption.js';
 
 import { Server } from './server/Server.js';
-import { BetterAuthRoutes } from '../server/auth/BetterAuthRoutes.js';
-import {
-  createServerApiKey,
-  listServerApiKeys,
-  revokeServerApiKey,
-  migrateServerApiKeyScopes,
-  DEFAULT_LOCAL_API_KEY_SCOPES,
-} from '../server/auth/sqlite-api-key-service.js';
-import { ServerV1Routes } from '../server/routes/v1/ServerV1Routes.js';
 
 import {
   handleCursorCommand
@@ -93,8 +81,6 @@ import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from './worker/session/SessionCompletionHandler.js';
 import { setIngestContext, attachIngestGeneratorStarter } from './worker/http/shared.js';
-import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, filterNativeHookBackedCodexWatches, loadTranscriptWatchConfig } from './transcripts/config.js';
-import { TranscriptWatcher } from './transcripts/watcher.js';
 import { SyncApply } from './sync/SyncApply.js';
 import { SyncClient } from './sync/SyncClient.js';
 
@@ -225,7 +211,6 @@ export class WorkerService implements WorkerRef {
   private searchRoutes: SearchRoutes | null = null;
 
   private chromaMcpManager: ChromaMcpManager | null = null;
-  private transcriptWatcher: TranscriptWatcher | null = null;
   private syncClient: SyncClient | null = null;
   private initializationComplete: Promise<void>;
   private resolveInitialization!: () => void;
@@ -305,9 +290,6 @@ export class WorkerService implements WorkerRef {
             : null,
         };
       },
-      preBodyParserRoutes: [
-        new BetterAuthRoutes(() => this.dbManager.getConnection()),
-      ],
       ...(tvToken ? { remoteReadOnly: { getToken: () => tvToken } } : {}),
     });
 
@@ -375,9 +357,6 @@ export class WorkerService implements WorkerRef {
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
-    this.server.registerRoutes(new ServerV1Routes({
-      getDatabase: () => this.dbManager.getConnection(),
-    }));
   }
 
   /**
@@ -673,8 +652,6 @@ export class WorkerService implements WorkerRef {
         logger.error('SYSTEM', 'Telemetry historical backfill failed (non-blocking)', {}, error as Error);
       });
 
-      await this.startTranscriptWatcher(settings);
-
       if (this.chromaMcpManager) {
         ChromaSync.backfillAllProjects(this.dbManager.getSessionStore()).then(() => {
           logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
@@ -741,68 +718,6 @@ export class WorkerService implements WorkerRef {
     await transport.close();
   }
 
-  private async startTranscriptWatcher(settings: ReturnType<typeof SettingsDefaultsManager.loadFromFile>): Promise<void> {
-    const transcriptsEnabled = settings.CLAUDE_MEM_TRANSCRIPTS_ENABLED !== 'false';
-    if (!transcriptsEnabled) {
-      logger.info('TRANSCRIPT', 'Transcript watcher disabled via CLAUDE_MEM_TRANSCRIPTS_ENABLED=false');
-      return;
-    }
-
-    const configPath = settings.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH || DEFAULT_CONFIG_PATH;
-    const resolvedConfigPath = expandHomePath(configPath);
-
-    if (!existsSync(resolvedConfigPath)) {
-      logger.info('TRANSCRIPT', 'Transcript watcher config not found; skipping automatic transcript capture', {
-        configPath: resolvedConfigPath
-      });
-      return;
-    }
-
-    const allowCodexTranscriptIngestion = settings.CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION === 'true';
-    const { config: transcriptConfig, removed } = filterNativeHookBackedCodexWatches(
-      loadTranscriptWatchConfig(configPath),
-      allowCodexTranscriptIngestion
-    );
-    const statePath = expandHomePath(transcriptConfig.stateFile ?? DEFAULT_STATE_PATH);
-
-    if (removed > 0) {
-      logger.warn('TRANSCRIPT', 'Skipped Codex transcript watch because native Codex hooks are authoritative', {
-        removed,
-        optInSetting: 'CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION=true',
-      });
-    }
-
-    if (transcriptConfig.watches.length === 0) {
-      logger.info('TRANSCRIPT', 'Transcript watcher config has no active watches; skipping automatic transcript capture', {
-        configPath: resolvedConfigPath,
-      });
-      return;
-    }
-
-    try {
-      this.transcriptWatcher = new TranscriptWatcher(transcriptConfig, statePath);
-      await this.transcriptWatcher.start();
-    } catch (error) {
-      this.transcriptWatcher?.stop();
-      this.transcriptWatcher = null;
-      if (error instanceof Error) {
-        logger.error('WORKER', 'Failed to start transcript watcher (continuing without transcript ingestion)', {
-          configPath: resolvedConfigPath
-        }, error);
-      } else {
-        logger.error('WORKER', 'Failed to start transcript watcher with non-Error (continuing without transcript ingestion)', {
-          configPath: resolvedConfigPath
-        }, new Error(String(error)));
-      }
-      return;
-    }
-    logger.info('TRANSCRIPT', 'Transcript watcher started', {
-      configPath: resolvedConfigPath,
-      statePath,
-      watches: transcriptConfig.watches.length
-    });
-  }
-
   private async terminateSession(sessionDbId: number, reason: string): Promise<void> {
     logger.info('SYSTEM', 'Session terminated', { sessionId: sessionDbId, reason });
 
@@ -822,12 +737,6 @@ export class WorkerService implements WorkerRef {
       isShuttingDown: () => this.isShuttingDown,
       markShuttingDown: () => { this.isShuttingDown = true; },
       beforeGracefulShutdown: async () => {
-        if (this.transcriptWatcher) {
-          this.transcriptWatcher.stop();
-          this.transcriptWatcher = null;
-          logger.info('TRANSCRIPT', 'Transcript watcher stopped');
-        }
-
         // Stop the pull loop before the DB starts closing: stop() clears the
         // timer and makes any in-flight cycle bail before its next DB touch.
         if (this.syncClient) {
@@ -905,18 +814,6 @@ export type ParsedWorkerCommand = {
 export function parseWorkerServiceCommand(argv: string[]): ParsedWorkerCommand {
   const [rawCommand, maybeSubCommand, ...rest] = argv;
 
-  if (rawCommand === 'server') {
-    const lifecycleCommands = new Set(['start', 'stop', 'restart', 'status']);
-    if (maybeSubCommand && lifecycleCommands.has(maybeSubCommand)) {
-      return { command: `server-${maybeSubCommand}`, args: rest };
-    }
-    const serverCommands = new Set(['api-key', 'keys', 'jobs']);
-    return {
-      command: maybeSubCommand && serverCommands.has(maybeSubCommand) ? `server-${maybeSubCommand}` : 'server-help',
-      args: rest,
-    };
-  }
-
   if (rawCommand === 'worker') {
     const workerAliases = new Set(['start', 'stop', 'restart', 'status']);
     return {
@@ -931,165 +828,9 @@ export function parseWorkerServiceCommand(argv: string[]): ParsedWorkerCommand {
   };
 }
 
-function printServerCommandHelp(): never {
-  console.error('Usage: worker-service server <command>');
-  console.error('Commands: start, stop, restart, status, api-key create|list|revoke');
-  process.exit(1);
-}
-
 function printWorkerAliasHelp(): never {
   console.error('Usage: worker-service worker start|stop|restart|status');
   process.exit(1);
-}
-
-function runServerServiceCli(command: string, extraArgs: string[] = []): void {
-  // Plan §1c line 149: try the post-rename script first, then fall back
-  // to the legacy `server-beta-service.cjs` so users running against an
-  // already-installed plugin cache (built before the rename) continue to
-  // dispatch without a forced reinstall.
-  let serverScript = path.join(__dirname, 'server-service.cjs');
-  if (!existsSync(serverScript)) {
-    const legacyScript = path.join(__dirname, 'server-beta-service.cjs');
-    if (existsSync(legacyScript)) {
-      serverScript = legacyScript;
-    } else {
-      console.error(`Server script not found at: ${serverScript}`);
-      console.error('Rebuild or reinstall claude-mem so server-service.cjs is available.');
-      process.exit(1);
-    }
-  }
-
-  const child = spawn(process.execPath, [serverScript, command, ...extraArgs], {
-    stdio: 'inherit',
-    windowsHide: true,
-    // Strip host CLI bleed-through (CLAUDE_CODE_*, including EFFORT_LEVEL) and
-    // Anthropic credentials before handing env to the spawned daemon. The
-    // daemon re-reads its own credentials from ~/.claude-mem/.env. See
-    // env-isolation discipline (#2357 / #2375).
-    env: sanitizeEnv(process.env),
-  });
-  child.on('error', (error) => {
-    console.error(`Failed to start server command: ${error.message}`);
-    process.exit(1);
-  });
-  child.on('close', (exitCode) => {
-    process.exit(exitCode ?? 0);
-  });
-}
-
-function parseServerApiKeyOptions(args: string[]): Record<string, string> {
-  const options: Record<string, string> = {};
-  for (let i = 0; i < args.length; i++) {
-    const item = args[i];
-    if (!item.startsWith('--')) {
-      continue;
-    }
-    const key = item.slice(2);
-    const next = args[i + 1];
-    if (!next || next.startsWith('--')) {
-      options[key] = 'true';
-      continue;
-    }
-    options[key] = next;
-    i++;
-  }
-  return options;
-}
-
-function openServerCommandDatabase(): Database {
-  ensureDir(DATA_DIR);
-  return openConfiguredSqliteDatabase(DB_PATH, { create: true, readwrite: true });
-}
-
-function runServerApiKeyCli(args: string[]): never {
-  const subCommand = args[0];
-  const options = parseServerApiKeyOptions(args.slice(1));
-  const db = openServerCommandDatabase();
-
-  try {
-    if (subCommand === 'create') {
-      // #2428 — when no --scope is passed, default to the scopes the local v1
-      // routes actually require (read + write) so a default key works instead
-      // of being authorized for nothing.
-      const scopeFlag = options.scope ?? options.scopes;
-      const scopes = scopeFlag
-        ? scopeFlag.split(',').map(scope => scope.trim()).filter(Boolean)
-        : [...DEFAULT_LOCAL_API_KEY_SCOPES];
-      const created = createServerApiKey(db, {
-        name: options.name ?? 'server-api-key',
-        teamId: options.team ?? null,
-        projectId: options.project ?? null,
-        scopes,
-      });
-      console.log(JSON.stringify({
-        id: created.record.id,
-        key: created.rawKey,
-        name: created.record.name,
-        teamId: created.record.teamId,
-        projectId: created.record.projectId,
-        scopes: created.record.scopes,
-      }, null, 2));
-      process.exit(0);
-    }
-
-    if (subCommand === 'list') {
-      console.log(JSON.stringify(listServerApiKeys(db).map(key => ({
-        id: key.id,
-        name: key.name,
-        prefix: key.prefix,
-        teamId: key.teamId,
-        projectId: key.projectId,
-        scopes: key.scopes,
-        status: key.status,
-        lastUsedAtEpoch: key.lastUsedAtEpoch,
-        expiresAtEpoch: key.expiresAtEpoch,
-        createdAtEpoch: key.createdAtEpoch,
-      })), null, 2));
-      process.exit(0);
-    }
-
-    if (subCommand === 'revoke') {
-      const id = args[1];
-      if (!id) {
-        console.error('Usage: worker-service server api-key revoke <id>');
-        process.exit(1);
-      }
-      const revoked = revokeServerApiKey(db, id);
-      if (!revoked) {
-        console.error(`API key not found: ${id}`);
-        process.exit(1);
-      }
-      console.log(JSON.stringify({ id: revoked.id, status: revoked.status }, null, 2));
-      process.exit(0);
-    }
-
-    if (subCommand === 'migrate-scopes') {
-      // #2560 — bring a key's scope set up to the default (or an explicit
-      // --scope list) so legacy/empty-scope keys work against the v1 routes.
-      const id = args[1] && !args[1].startsWith('--') ? args[1] : undefined;
-      if (!id) {
-        console.error('Usage: worker-service server api-key migrate-scopes <id> [--scope a,b]');
-        process.exit(1);
-      }
-      const scopeFlag = options.scope ?? options.scopes;
-      const scopes = scopeFlag
-        ? scopeFlag.split(',').map(scope => scope.trim()).filter(Boolean)
-        : [...DEFAULT_LOCAL_API_KEY_SCOPES];
-      const updated = migrateServerApiKeyScopes(db, id, scopes);
-      if (!updated) {
-        console.error(`API key not found: ${id}`);
-        process.exit(1);
-      }
-      console.log(JSON.stringify({ id: updated.id, scopes: updated.scopes, status: 'scopes-migrated' }, null, 2));
-      process.exit(0);
-    }
-
-    console.error(`Unknown server api-key subcommand: ${subCommand ?? '(none)'}`);
-    console.error('Usage: worker-service server api-key create|list|revoke|migrate-scopes');
-    process.exit(1);
-  } finally {
-    db.close();
-  }
 }
 
 async function main() {
@@ -1283,47 +1024,6 @@ async function main() {
       break;
     }
 
-    case 'server-start':
-    case 'server-stop':
-    case 'server-restart':
-    case 'server-status': {
-      runServerServiceCli(command.slice('server-'.length));
-      break;
-    }
-
-    case 'server-api-key': {
-      const apiKeyCommand = commandArgs[0];
-      if (apiKeyCommand === 'create' || apiKeyCommand === 'list' || apiKeyCommand === 'revoke') {
-        runServerApiKeyCli(commandArgs);
-      }
-      if (apiKeyCommand === 'migrate-scopes') {
-        // #2560 — scope migration runs against the SQLite local backend here.
-        runServerApiKeyCli(commandArgs);
-      }
-      console.error(`Unknown server api-key subcommand: ${apiKeyCommand ?? '(none)'}`);
-      console.error('Usage: worker-service server api-key create|list|revoke|migrate-scopes');
-      process.exit(1);
-      break;
-    }
-
-    // #2572 — `keys`/`jobs` are server (Postgres) operability commands.
-    // Delegate to the server script so they read the Postgres backend the
-    // server runtime actually uses, instead of the SQLite worker store.
-    case 'server-keys': {
-      runServerServiceCli('server', ['keys', ...commandArgs]);
-      break;
-    }
-
-    case 'server-jobs': {
-      runServerServiceCli('server', ['jobs', ...commandArgs]);
-      break;
-    }
-
-    case 'server-help': {
-      printServerCommandHelp();
-      break;
-    }
-
     case 'worker-help': {
       printWorkerAliasHelp();
       break;
@@ -1376,18 +1076,6 @@ async function main() {
       const { cleanClaudeMd } = await import('../cli/claude-md-commands.js');
       const result = await cleanClaudeMd(dryRun);
       process.exit(result);
-      break;
-    }
-
-    case 'transcript': {
-      // npx-cli falls back to `worker-service.cjs transcript <sub>` when the
-      // standalone `transcript-watcher.cjs` is not present in the bundle
-      // (see thedotmack/claude-mem 2450). Dispatch to the shared
-      // implementation so `init`, `watch`, and `validate` all work
-      // regardless of which entry point the user invokes.
-      const { runTranscriptCommand } = await import('./transcripts/cli.js');
-      const exitCode = await runTranscriptCommand(commandArgs[0], commandArgs.slice(1));
-      process.exit(exitCode);
       break;
     }
 

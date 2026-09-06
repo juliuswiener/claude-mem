@@ -8,12 +8,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 
 const packageJsonPath = path.join(rootDir, 'package.json');
-const codexPluginPath = path.join(rootDir, '.codex-plugin', 'plugin.json');
-const bundledCodexPluginPath = path.join(rootDir, 'plugin', '.codex-plugin', 'plugin.json');
 const claudePluginPath = path.join(rootDir, '.claude-plugin', 'plugin.json');
 const bundledClaudePluginPath = path.join(rootDir, 'plugin', '.claude-plugin', 'plugin.json');
 const cursorPluginPaths = [
-  path.join(rootDir, 'claude-mem-cursor', '.cursor-plugin', 'plugin.json'),
   path.join(rootDir, 'claude-mem-grok-bot', '.cursor-plugin', 'plugin.json'),
 ];
 
@@ -23,31 +20,6 @@ function readJson(filePath) {
 
 function writeJson(filePath, value) {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + '\n');
-}
-
-function syncCodexPlugin(plugin, pkg) {
-  const author =
-    typeof plugin.author === 'object' && plugin.author ? plugin.author : {};
-
-  return {
-    ...plugin,
-    name: pkg.name,
-    version: pkg.version,
-    description: pkg.description,
-    homepage: pkg.homepage,
-    repository: normalizeRepositoryUrl(pkg.repository),
-    license: pkg.license,
-    keywords: pkg.keywords,
-    author: {
-      ...author,
-      name: normalizeAuthorName(pkg.author),
-    },
-    interface: {
-      ...plugin.interface,
-      developerName: normalizeAuthorName(pkg.author),
-      websiteURL: normalizeRepositoryUrl(pkg.repository),
-    },
-  };
 }
 
 function syncClaudePlugin(plugin, pkg) {
@@ -96,7 +68,7 @@ function normalizeRepositoryUrl(repository) {
 }
 
 function main() {
-  for (const filePath of [packageJsonPath, codexPluginPath, bundledCodexPluginPath, claudePluginPath, bundledClaudePluginPath, ...cursorPluginPaths]) {
+  for (const filePath of [packageJsonPath, claudePluginPath, bundledClaudePluginPath, ...cursorPluginPaths]) {
     if (!fs.existsSync(filePath)) {
       console.error(`Missing required file: ${filePath}`);
       process.exit(1);
@@ -104,14 +76,10 @@ function main() {
   }
 
   const pkg = readJson(packageJsonPath);
-  const codexPlugin = readJson(codexPluginPath);
-  const bundledCodexPlugin = readJson(bundledCodexPluginPath);
   const claudePlugin = readJson(claudePluginPath);
   const bundledClaudePlugin = readJson(bundledClaudePluginPath);
   const cursorPlugins = cursorPluginPaths.map(readJson);
 
-  writeJson(codexPluginPath, syncCodexPlugin(codexPlugin, pkg));
-  writeJson(bundledCodexPluginPath, syncCodexPlugin(bundledCodexPlugin, pkg));
   writeJson(claudePluginPath, syncClaudePlugin(claudePlugin, pkg));
   writeJson(bundledClaudePluginPath, syncClaudePlugin(bundledClaudePlugin, pkg));
   cursorPluginPaths.forEach((filePath, index) => writeJson(filePath, syncCursorPlugin(cursorPlugins[index], pkg)));
