@@ -21,7 +21,20 @@ export interface ActiveSession {
   cumulativeOutputTokens: number;  
   earliestPendingTimestamp: number | null;  
   claimedMessageIds: number[];
-  conversationHistory: ConversationMessage[];  
+  /**
+   * The last claimed batch confirmed WITHOUT producing observations — an ordinary
+   * "idle" turn. Kept because attribution outlives the batch it came from: the
+   * observer conversation is stateful across turns, so a later turn can describe
+   * tool calls whose messages were already confirmed and cleared. When that
+   * happens the current batch carries no cwd, resolveObservationProject falls back
+   * to the session project, and an observation about repo B lands under repo A —
+   * the exact defect per-tool-cwd attribution was built to fix.
+   *
+   * Only consulted when the current batch has no cwd of its own, so a normal batch
+   * always wins and this can never override a correct answer.
+   */
+  lastIdleEvidence: PendingMessageWithId[];
+  conversationHistory: ConversationMessage[];
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
   consecutiveRestarts: number;
   /**

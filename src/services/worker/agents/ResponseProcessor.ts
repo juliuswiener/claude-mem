@@ -269,6 +269,28 @@ function mergeFileLists(primary: string[], secondary: string[]): string[] {
 // project silently misattributes them. Re-resolve per compression cycle from
 // the most recent claimed tool call's own cwd instead; fall back to the
 // session project when no claimed message carries one.
+/**
+ * Which messages carry the attribution for this turn.
+ *
+ * Normally the batch just claimed. But an "idle" turn confirms and CLEARS its batch
+ * (see the non-XML branch below), and the observer conversation is stateful — the
+ * next turn can produce an observation about those very tool calls, by which time
+ * their cwd is gone and attribution falls back to the session project. That is how
+ * an observation about repo B ends up under repo A.
+ *
+ * The retained batch is only consulted when the current one offers no cwd at all,
+ * so a normal batch always wins and this can never override a correct answer.
+ */
+export function attributionMessages<T extends Pick<PendingMessage, 'type' | 'cwd'>>(
+  claimed: ReadonlyArray<T>,
+  lastIdle: ReadonlyArray<T> | undefined
+): T[] {
+  const hasCwd = claimed.some(
+    m => m.type === 'observation' && typeof m.cwd === 'string' && m.cwd.trim() !== ''
+  );
+  return hasCwd ? [...claimed] : [...(lastIdle ?? []), ...claimed];
+}
+
 export function resolveObservationProject(
   messages: ReadonlyArray<Pick<PendingMessage, 'type' | 'cwd'>>,
   fallbackProject: string
@@ -423,6 +445,15 @@ export async function processAgentResponse(
 
     // Plain-text skip responses are intentionally ignored. Re-queueing them
     // creates an observer loop where the same low-signal batch is retried.
+    //
+    // But the batch's ATTRIBUTION must survive the confirm. The observer
+    // conversation is stateful: a later turn can produce an observation about tool
+    // calls from this batch, and by then claimedMessageIds is empty. Keeping the
+    // cwd evidence here is what makes an observation about a sibling repo land in
+    // that repo instead of falling back to the session's own.
+    // Optional call: several suites stub sessionManager with only the methods they
+    // exercise, and losing attribution is not worth throwing inside the idle path.
+    session.lastIdleEvidence = sessionManager.getClaimedMessages?.(session.sessionDbId) ?? [];
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;
     return;
@@ -448,11 +479,14 @@ export async function processAgentResponse(
   const { observations, summary } = parsed;
   const summaryForStore = normalizeSummaryForStorage(summary);
   const claimedMessages = sessionManager.getClaimedMessages(session.sessionDbId);
-  const fileEvidence = extractObservationFileEvidence(claimedMessages);
+  // Fall back to the last idle batch only when THIS batch has no cwd to offer, so
+  // a normal batch always wins. See WorkerSession.lastIdleEvidence.
+  const attributed = attributionMessages(claimedMessages, session.lastIdleEvidence ?? []);
+  const fileEvidence = extractObservationFileEvidence(attributed);
   const sanitizedObservations = sanitizeObservationFiles(observations, fileEvidence);
   // Attribute this batch to the git root of the tool cwd it actually ran in,
   // not the cwd the session happened to start in — see resolveObservationProject.
-  const observationProject = resolveObservationProject(claimedMessages, context.project);
+  const observationProject = resolveObservationProject(attributed, context.project);
   const observationContext: ResponseContext = { ...context, project: observationProject };
 
   const sessionStore = dbManager.getSessionStore();
@@ -569,6 +603,8 @@ export async function processAgentResponse(
     });
   }
 
+  // Evidence consumed: this turn produced observations.
+  session.lastIdleEvidence = [];
   await sessionManager.confirmClaimedMessages(session.sessionDbId);
   session.earliestPendingTimestamp = null;
   worker?.broadcastProcessingStatus?.();

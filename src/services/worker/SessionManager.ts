@@ -132,6 +132,7 @@ export class SessionManager {
       cumulativeOutputTokens: 0,
       earliestPendingTimestamp: null,
       claimedMessageIds: [],
+      lastIdleEvidence: [],
       conversationHistory: [],  // Initialize empty - will be populated by agents
       currentProvider: null,  // Will be set when generator starts
       consecutiveRestarts: 0,

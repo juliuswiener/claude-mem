@@ -1142,3 +1142,41 @@ describe('ResponseProcessor', () => {
     });
   });
 });
+
+// --- Cross-repo attribution survives an idle turn -------------------------
+//
+// The defect this covers, measured twice on 2026-09-06/07: a session started in
+// repo A touches a file in repo B. The observer answers "idle" for that batch, so
+// it is confirmed and cleared. The NEXT turn produces an observation about those
+// same tool calls — but claimedMessageIds is empty by then, resolveObservationProject
+// finds no cwd, and the observation lands under repo A.
+//
+// Remove the lastIdle fallback in attributionMessages and the second case below
+// goes red: that is the mutation this test exists for.
+describe('attributionMessages', () => {
+  const obs = (cwd: string | null) => ({ type: 'observation' as const, cwd });
+
+  it('uses the current batch when it carries a cwd', async () => {
+    const { attributionMessages } = await import('../../../src/services/worker/agents/ResponseProcessor.js');
+    const out = attributionMessages([obs('/repo/b')], [obs('/repo/a')]);
+    expect(out).toEqual([obs('/repo/b')]);
+  });
+
+  it('falls back to the last idle batch when the current one has no cwd', async () => {
+    const { attributionMessages } = await import('../../../src/services/worker/agents/ResponseProcessor.js');
+    const out = attributionMessages([obs(null)], [obs('/repo/b')]);
+    expect(out.map(m => m.cwd)).toEqual(['/repo/b', null]);
+  });
+
+  it('does not let a stale idle batch override a live one', async () => {
+    const { attributionMessages } = await import('../../../src/services/worker/agents/ResponseProcessor.js');
+    const out = attributionMessages([obs('/repo/a')], [obs('/repo/b')]);
+    expect(out.map(m => m.cwd)).toEqual(['/repo/a']);
+  });
+
+  it('ignores a blank cwd as if it were absent', async () => {
+    const { attributionMessages } = await import('../../../src/services/worker/agents/ResponseProcessor.js');
+    const out = attributionMessages([obs('   ')], [obs('/repo/b')]);
+    expect(out.map(m => m.cwd)).toEqual(['/repo/b', '   ']);
+  });
+});
