@@ -59,7 +59,7 @@ existing entry's key in `known_marketplaces.json`. Two options:
   GitHub again (fine — that's a public repo, cheap to re-add).
 - **(b) Add alongside, under a distinct name** — edit the fork's
   `.claude-plugin/marketplace.json` `"name"` field to something distinct
-  (e.g. `"nord-subtraktion"`) before adding it, so both marketplaces coexist
+  (e.g. `"juliuswiener"`) before adding it, so both marketplaces coexist
   and the switch is just toggling `enabledPlugins`. **Recommended** — it makes
   the revert a one-line settings change with no re-fetch.
 
@@ -76,18 +76,18 @@ npm run build   # regenerate plugin/ from src/ (hooks, manifests, lockfile)
 # 1. Avoid the marketplace-name collision (see above) — one-time, local edit,
 #    not committed to git (or commit it if the owner wants the fork to
 #    permanently identify as a distinct marketplace):
-sed -i 's/"name": "thedotmack"/"name": "nord-subtraktion"/' .claude-plugin/marketplace.json
+sed -i 's/"name": "thedotmack"/"name": "juliuswiener"/' .claude-plugin/marketplace.json
 
 # 2. Register the fork checkout itself as a marketplace source (local path,
 #    no push needed):
 claude plugin marketplace add /home/julius/00_projects/nord/claude-mem
 
 # 3. Install claude-mem from the new marketplace:
-claude plugin install claude-mem@nord-subtraktion
+claude plugin install claude-mem@juliuswiener
 
 # 4. Flip enabled plugins: disable upstream, enable the fork.
 claude plugin disable claude-mem@thedotmack
-claude plugin enable claude-mem@nord-subtraktion
+claude plugin enable claude-mem@juliuswiener
 
 # 5. Stop the currently-running worker daemon. This step is NOT optional:
 #    the worker is a long-lived background process independent of which
@@ -102,7 +102,7 @@ bun /home/julius/.claude/plugins/cache/thedotmack/claude-mem/13.24.1/scripts/wor
 
 # 6. Restart Claude Code (or start a new session). The next SessionStart hook
 #    now resolves through the fork's cache install
-#    (~/.claude/plugins/cache/nord-subtraktion/claude-mem/<version>/) and
+#    (~/.claude/plugins/cache/juliuswiener/claude-mem/<version>/) and
 #    spawns a fresh worker from THAT script, confirmable via:
 #    cat ~/.claude-mem/worker.pid   # new pid, new startedAt
 ```
@@ -126,7 +126,7 @@ observation rows keep every existing column value and get `NULL`
 
 ```bash
 # 1. Flip enabled plugins back.
-claude plugin disable claude-mem@nord-subtraktion
+claude plugin disable claude-mem@juliuswiener
 claude plugin enable claude-mem@thedotmack
 
 # 2. Stop the fork's worker daemon (same reasoning as step 5 above, reversed —
@@ -138,8 +138,8 @@ bun /home/julius/00_projects/nord/claude-mem/plugin/scripts/worker-service.cjs s
 # 3. Optional cleanup — uninstall the fork plugin and remove its marketplace
 #    registration entirely (not required; leaving it installed-but-disabled
 #    is harmless and makes switching back later a two-command operation):
-claude plugin uninstall claude-mem@nord-subtraktion
-claude plugin marketplace remove nord-subtraktion
+claude plugin uninstall claude-mem@juliuswiener
+claude plugin marketplace remove juliuswiener
 
 # 4. Restart Claude Code / start a new session. The old cache install
 #    (~/.claude/plugins/cache/thedotmack/claude-mem/13.24.1/) spawns a worker
@@ -171,7 +171,7 @@ The switch was carried out through step 5 and then reverted. What was learned:
 
 **Steps 1-4 work exactly as written.** `marketplace add`, `install`, `disable`/`enable`
 all succeeded; `enabledPlugins` flipped cleanly, and the fork's cache install at
-`~/.claude/plugins/cache/nord-subtraktion/claude-mem/13.24.1/` was verified to carry the
+`~/.claude/plugins/cache/juliuswiener/claude-mem/13.24.1/` was verified to carry the
 attribution fix (`lastIdleEvidence`, `attributionMessages` present in the bundled
 `worker-service.cjs`). Option (b), the distinct marketplace name, made the revert a
 two-command operation as intended.
