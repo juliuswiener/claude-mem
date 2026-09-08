@@ -1,8 +1,8 @@
 # Switching the active claude-mem plugin
 
 This documents how Claude Code picks the active `claude-mem` plugin, and the
-exact commands to switch to this fork and to revert. **No switch has been
-performed — these are instructions only.**
+exact commands to switch to this fork and to revert. **Attempted 2026-09-08 and reverted** — see the postscript at the bottom before
+trying again.
 
 ## How plugin selection actually works (three files)
 
@@ -163,3 +163,43 @@ claude plugin marketplace remove nord-subtraktion
 | Frozen install snapshot (what hooks/worker actually run) | `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` |
 | Fork's build output that becomes that snapshot | `plugin/` (this repo, produced by `npm run build`) |
 | Shared data (DB, settings, .env, logs, pid) | `~/.claude-mem/` (via `CLAUDE_MEM_DATA_DIR`) |
+
+
+## Postscript: the attempt of 2026-09-08
+
+The switch was carried out through step 5 and then reverted. What was learned:
+
+**Steps 1-4 work exactly as written.** `marketplace add`, `install`, `disable`/`enable`
+all succeeded; `enabledPlugins` flipped cleanly, and the fork's cache install at
+`~/.claude/plugins/cache/nord-subtraktion/claude-mem/13.24.1/` was verified to carry the
+attribution fix (`lastIdleEvidence`, `attributionMessages` present in the bundled
+`worker-service.cjs`). Option (b), the distinct marketplace name, made the revert a
+two-command operation as intended.
+
+**Step 6 must not be replaced by a hand-spawn.** After stopping the old worker (step 5) I
+tried to start the fork's worker directly instead of restarting Claude Code, to verify the
+switch before handing it over. `worker-service.cjs start` daemonises with `stdio: "ignore"`
+and exits 0 whether or not the child survives, so the attempts looked silent and
+successful while nothing came up. Worse, one of those launchers died holding
+`~/.claude-mem/spawn.lock`, after which **every** further spawn — the upstream code
+included — refused with "Another launcher holds the spawn lock". That is what made the
+fork look broken; it is not evidence about the fork at all. See
+`vault/backlog/nord/spawn-lock-ohne-besitzerpruefung-legt-die-aufzeichnung-still.md`.
+
+**Whether the fork's worker runs is still unproven, in either direction.** The one real
+difference observed is a boot warning, `viewer.html not found at any expected location`,
+because the subtraction removed `src/ui`. It is logged as WARN, not ERROR, and nothing
+established that it is fatal.
+
+**Before the next attempt:**
+
+- Do steps 1-5, then **restart Claude Code** and let the SessionStart hook spawn the
+  worker. Do not spawn it by hand.
+- If nothing comes up, check `~/.claude-mem/spawn.lock` first and whether its `pid` is
+  alive. A stale lock silently blocks every start, upstream and fork alike.
+- Take a database backup first; `sqlite3 ~/.claude-mem/claude-mem.db ".backup ..."` on a
+  497 MB file took seconds.
+- Losing the fork's missing `skills/` costs one usable skill: 18 of the 19 upstream skills
+  are already denied by `skill-deny.cjs` or `settings.json`, and the survivor, `do`, is
+  routed to `implement` by NORD ROUTER anyway. `plugin/.mcp.json` is present, so the
+  memory search tools are unaffected.
