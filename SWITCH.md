@@ -186,15 +186,33 @@ included — refused with "Another launcher holds the spawn lock". That is what 
 fork look broken; it is not evidence about the fork at all. See
 `vault/backlog/nord/spawn-lock-ohne-besitzerpruefung-legt-die-aufzeichnung-still.md`.
 
-**Whether the fork's worker runs is still unproven, in either direction.** The one real
-difference observed is a boot warning, `viewer.html not found at any expected location`,
-because the subtraction removed `src/ui`. It is logged as WARN, not ERROR, and nothing
-established that it is fatal.
+**Whether the fork's worker runs was never actually tested — corrected the same day.**
+Every attempt found a worker already running, because a live Claude Code session respawns
+the upstream one within seconds of any stop. The log line that settles it:
+
+```
+Worker PID file points to a live process, skipping duplicate spawn
+```
+
+Measured at that moment: 17 MCP servers and 18 processes out of
+`cache/thedotmack/claude-mem`, each of which calls `ensureWorkerStarted` on demand. So the
+fork never reached `worker-spawner.ts:148` ("Starting worker daemon") — the function
+correctly bails out earlier because one is already up. The `viewer.html not found` warning
+(a consequence of subtracting `src/ui`) is exactly what it says: a warning, not a failure.
+The fork is not shown to be broken in any respect.
+
+Also invalid: any comparison run on a substitute port. `CLAUDE_MEM_WORKER_PORT` is read by
+the bundle but does not steer the child — both bundles report "ready" and bind nothing.
 
 **Before the next attempt:**
 
-- Do steps 1-5, then **restart Claude Code** and let the SessionStart hook spawn the
-  worker. Do not spawn it by hand.
+- **Step 5 is wirkungslos while any session with upstream hooks is alive** — the stop
+  does not survive ten seconds. The order that works:
+  1. enable the fork,
+  2. **quit Claude Code entirely** — every session, not just the one you are in,
+  3. stop the worker, now that nothing is left to respawn it,
+  4. start Claude Code. The new session's hooks come from the fork and spawn its worker.
+- Do not spawn the worker by hand at any point.
 - If nothing comes up, check `~/.claude-mem/spawn.lock` first and whether its `pid` is
   alive. A stale lock silently blocks every start, upstream and fork alike.
 - Take a database backup first; `sqlite3 ~/.claude-mem/claude-mem.db ".backup ..."` on a
