@@ -1,17 +1,17 @@
 {
-  "name": "juliuswiener",
+  "name": "nord-local",
   "owner": {
-    "name": "Alex Newman"
+    "name": "Julius Wiener"
   },
   "metadata": {
-    "description": "Plugins by Alex Newman (thedotmack)"
+    "description": "Local nord plugins built from a working tree on this machine"
   },
   "plugins": [
     {
-      "name": "claude-mem",
+      "name": "nord-mem",
       "version": "13.24.1",
       "source": "./plugin",
-      "description": "Persistent memory system for Claude Code - context compression across sessions"
+      "description": "nord fork of claude-mem: subtracted, per-tool-cwd attribution, observer must state where and why"
     },
     {
       "name": "claude-mem-cowork",
