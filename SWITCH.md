@@ -194,8 +194,8 @@ the upstream one within seconds of any stop. The log line that settles it:
 Worker PID file points to a live process, skipping duplicate spawn
 ```
 
-Measured at that moment: 17 MCP servers and 18 processes out of
-`cache/thedotmack/claude-mem`, each of which calls `ensureWorkerStarted` on demand. So the
+Measured at that moment: 17 MCP servers out of `cache/thedotmack/claude-mem`, each of
+which calls `ensureWorkerStarted` on demand. So the
 fork never reached `worker-spawner.ts:148` ("Starting worker daemon") — the function
 correctly bails out earlier because one is already up. The `viewer.html not found` warning
 (a consequence of subtracting `src/ui`) is exactly what it says: a warning, not a failure.
