@@ -56,6 +56,47 @@ function getSpawnLockPath(): string {
  * A lock whose mtime is older than SPAWN_LOCK_STALE_MS is broken (unlinked)
  * and acquisition is retried exactly once.
  */
+/**
+ * Does the process recorded in the lock still exist?
+ *
+ * The payload has carried `pid` since the lock was introduced and nothing ever
+ * read it: staleness was judged purely on mtime, so a launcher that died
+ * mid-spawn kept every other launcher out for the full SPAWN_LOCK_STALE_MS.
+ * Measured 2026-09-08: a lock whose holder was already gone blocked four
+ * consecutive start attempts — the worker was down and nothing was recorded,
+ * with only "Another launcher holds the spawn lock" in the log to say so.
+ *
+ * ONLY THE "DEAD" VERDICT IS TRUSTED. A pid can be reused by an unrelated
+ * process, so "alive" proves nothing and simply falls through to the mtime
+ * rule — the behaviour this had before. "Gone", by contrast, is certain: that
+ * launcher is not coming back, and its lock is spent. Deciding from the world
+ * rather than from the record is the point; the record is exactly what a killed
+ * process leaves behind wrong.
+ *
+ * Unreadable or malformed lock, or no pid in it: return true (treat as alive)
+ * so the mtime rule stays in charge. This must never be the thing that decides
+ * to break a lock on its own.
+ */
+function holderIsAlive(lockPath: string): boolean {
+  let pid: unknown;
+  try {
+    pid = JSON.parse(readFileSync(lockPath, 'utf8')).pid;
+  } catch {
+    return true;
+  }
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) {
+    return true;
+  }
+  try {
+    process.kill(pid, 0);        // signal 0: existence probe, sends nothing
+    return true;
+  } catch (error: unknown) {
+    // ESRCH — no such process. EPERM means it exists but belongs to someone
+    // else, which still counts as alive.
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
 export function acquireSpawnLock(): boolean {
   const lockPath = getSpawnLockPath();
   const payload = JSON.stringify({
@@ -95,9 +136,9 @@ export function acquireSpawnLock(): boolean {
         continue;
       }
 
-      if (Date.now() - mtimeMs <= SPAWN_LOCK_STALE_MS) {
-        // Fresh lock: another launcher is mid-spawn. Caller waits for its
-        // worker instead of spawning a competitor.
+      if (Date.now() - mtimeMs <= SPAWN_LOCK_STALE_MS && holderIsAlive(lockPath)) {
+        // Fresh lock AND its holder still exists: another launcher is mid-spawn.
+        // Caller waits for its worker instead of spawning a competitor.
         return false;
       }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -84,8 +84,14 @@ describe('worker-spawn-gate — cross-launcher spawn lockfile', () => {
 
     // The readiness deadline is 60s on Windows. A lock still inside the
     // boundary must remain fresh so a readiness poll cannot lose ownership.
+    //
+    // The pid must be a LIVE one. Freshness is mtime AND holder-exists since
+    // 2026-09-08 (see holderIsAlive), and the case this test is about — a holder
+    // still polling for readiness — has a live holder by definition. The earlier
+    // fixture used a fictional 999_999_999, which now reads as "died mid-spawn"
+    // and is a different scenario, covered separately below.
     const foreignPayload = JSON.stringify({
-      pid: 999_999_999,
+      pid: process.pid,
       startedAt: new Date(Date.now() - 89_000).toISOString(),
     });
     writeFileSync(lockPath, foreignPayload);
@@ -123,5 +129,40 @@ describe('worker-spawn-gate — cross-launcher spawn lockfile', () => {
     expect(existsSync(lockPath)).toBe(false);
 
     expect(acquireSpawnLock()).toBe(true);
+  });
+});
+
+// --- A dead holder does not hold the lock ---------------------------------
+//
+// The payload has always carried `pid` and nothing read it: staleness was judged
+// purely on mtime, so a launcher that died mid-spawn kept everyone else out for the
+// full 90s. Measured 2026-09-08: four consecutive start attempts refused while the
+// worker was down and nothing was being recorded.
+//
+// Remove the holderIsAlive() call from acquireSpawnLock and the first case below
+// goes red — that is the mutation this test exists for.
+describe('acquireSpawnLock: holder liveness', () => {
+  const lockPath = () => join(process.env.CLAUDE_MEM_DATA_DIR!, 'spawn.lock');
+
+  it('breaks a fresh lock whose holder is gone', async () => {
+    const { acquireSpawnLock, releaseSpawnLock } = await import('../../src/shared/worker-spawn-gate.js');
+    // 2^22 is above the default pid_max on Linux, so it can never be live.
+    writeFileSync(lockPath(), JSON.stringify({ pid: 4194304, startedAt: new Date().toISOString() }));
+    expect(acquireSpawnLock()).toBe(true);
+    releaseSpawnLock();
+  });
+
+  it('respects a fresh lock whose holder is this very process', async () => {
+    const { acquireSpawnLock } = await import('../../src/shared/worker-spawn-gate.js');
+    writeFileSync(lockPath(), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+    expect(acquireSpawnLock()).toBe(false);
+    unlinkSync(lockPath());
+  });
+
+  it('falls back to the mtime rule when the lock carries no usable pid', async () => {
+    const { acquireSpawnLock } = await import('../../src/shared/worker-spawn-gate.js');
+    writeFileSync(lockPath(), 'not json at all');
+    expect(acquireSpawnLock()).toBe(false);   // fresh by mtime, pid unreadable
+    unlinkSync(lockPath());
   });
 });
