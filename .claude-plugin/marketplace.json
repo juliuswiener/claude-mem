@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "nord-mem",
-      "version": "13.24.1",
+      "version": "13.25.2",
       "source": "./plugin",
       "description": "nord fork of claude-mem: subtracted, per-tool-cwd attribution, observer must state where and why"
     },

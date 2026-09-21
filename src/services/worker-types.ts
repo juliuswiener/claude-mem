@@ -70,7 +70,7 @@ export interface ActiveSession {
   lastSummaryStored?: boolean;
   pendingAgentId?: string | null;
   pendingAgentType?: string | null;
-  abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | string | null;
+  abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | 'provider_switch' | string | null;
   respawnTimer?: ReturnType<typeof setTimeout>;
   /** When the latest compression prompt was dispatched to the model — telemetry compression_ms. */
   lastPromptSentAt?: number | null;
@@ -95,6 +95,10 @@ export interface ActiveSession {
   pendingCompressionEvent?: Record<string, unknown> | null;
   /** Cumulative total_cost_usd from the SDK's latest result message — per-compression cost is the delta between results. */
   lastResultTotalCostUsd?: number | null;
+  /** SessionEnd requested one Telegram wrap-up after the latest summary lands. */
+  telegramWrapupRequestedAt?: number | null;
+  /** One-shot grace timer for a SessionEnd wrap-up request. */
+  telegramWrapupTimer?: ReturnType<typeof setTimeout> | null;
 }
 
 export interface PendingMessage {

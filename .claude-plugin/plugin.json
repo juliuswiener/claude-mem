@@ -1,6 +1,6 @@
 {
   "name": "nord-mem",
-  "version": "13.24.1",
+  "version": "13.25.2",
   "description": "Memory compression for Claude Code \u2014 nord fork of thedotmack/claude-mem: subtracted, per-tool-cwd attribution, observer must state where and why",
   "author": {
     "name": "Alex Newman"

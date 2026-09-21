@@ -7,7 +7,8 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
-import { DATA_DIR, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
+import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
+import { DeferredSessionEndQueue } from '../shared/deferred-session-end.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
@@ -18,7 +19,7 @@ import { ChromaSync } from './sync/ChromaSync.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
-import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResult } from './worker-spawner.js';
+import { ensureWorkerStarted as ensureWorkerStartedShared, getLastWorkerBootFailure, type WorkerStartResult } from './worker-spawner.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../shared/dependency-health.js';
 import { captureEvent, captureException, shutdownTelemetry, enableExceptionAutocaptureForWorker } from './telemetry/telemetry.js';
@@ -45,6 +46,7 @@ import {
   touchPidFile
 } from './infrastructure/ProcessManager.js';
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
+import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
 import {
   isPortInUse,
   waitForHealth,
@@ -195,6 +197,8 @@ export class WorkerService implements WorkerRef {
   private mcpReady: boolean = false;
   private initializationCompleteFlag: boolean = false;
   private isShuttingDown: boolean = false;
+  private deferredSessionEndReplayTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly deferredSessionEndQueue = new DeferredSessionEndQueue();
 
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -306,6 +310,40 @@ export class WorkerService implements WorkerRef {
     configureSupervisorSignalHandlers(async () => {
       await this.shutdown('signal');
     });
+  }
+
+  private async drainDeferredSessionEndQueue(): Promise<void> {
+    const store = this.dbManager.getSessionStore();
+    const result = await this.deferredSessionEndQueue.drain(async (entry) => {
+      const sessionDbId = store.findSessionDbIdByContentSessionId(
+        entry.contentSessionId,
+        entry.platformSource,
+      );
+      if (sessionDbId === null) {
+        // Keep the durable entry: SessionStart/session-init may have been
+        // delayed by the same worker outage that deferred SessionEnd.
+        return false;
+      }
+
+      await this.sessionManager.requestSessionWrapup(sessionDbId);
+      return true;
+    });
+
+    if (result.drained > 0) {
+      logger.info('SESSION', 'Replayed deferred SessionEnd requests', { count: result.drained });
+    }
+  }
+
+  private startDeferredSessionEndReplay(): void {
+    if (this.deferredSessionEndReplayTimer !== null) return;
+
+    this.deferredSessionEndReplayTimer = setInterval(() => {
+      void this.drainDeferredSessionEndQueue().catch((error: unknown) => {
+        logger.warn('SESSION', 'Deferred SessionEnd replay loop failed', {},
+          error instanceof Error ? error : new Error(String(error)));
+      });
+    }, 30_000);
+    this.deferredSessionEndReplayTimer.unref?.();
   }
 
   private registerRoutes(): void {
@@ -496,6 +534,13 @@ export class WorkerService implements WorkerRef {
 
       logger.info('WORKER', 'Initializing database manager...');
       await this.dbManager.initialize();
+
+      // A SessionEnd hook gets a tiny host budget and persists its identifier
+      // when the worker is unavailable. Drain that idempotent spool as soon as
+      // SQLite is ready, then keep polling lightly for an event that raced the
+      // tail of worker startup or a transient later IPC failure.
+      await this.drainDeferredSessionEndQueue();
+      this.startDeferredSessionEndReplay();
 
       runOneTimeV12_4_3Cleanup();
 
@@ -737,6 +782,11 @@ export class WorkerService implements WorkerRef {
       isShuttingDown: () => this.isShuttingDown,
       markShuttingDown: () => { this.isShuttingDown = true; },
       beforeGracefulShutdown: async () => {
+        if (this.deferredSessionEndReplayTimer !== null) {
+          clearInterval(this.deferredSessionEndReplayTimer);
+          this.deferredSessionEndReplayTimer = null;
+        }
+
         // Stop the pull loop before the DB starts closing: stop() clears the
         // timer and makes any in-flight cycle bail before its next DB touch.
         if (this.syncClient) {
@@ -855,7 +905,14 @@ async function main() {
     case 'start': {
       const result = await ensureWorkerStarted(port);
       if (result === 'dead') {
-        exitWithStatus('error', 'Failed to start worker');
+        // Carry the boot probe's own words into the hook's status line — this
+        // is the one place a user reliably sees, and "Failed to start worker"
+        // on its own sends them to the log to find out nothing more.
+        const bootFailure = getLastWorkerBootFailure();
+        exitWithStatus(
+          'error',
+          bootFailure ? `Failed to start worker: ${bootFailure}` : 'Failed to start worker'
+        );
       } else {
         exitWithStatus('ready', result === 'warming' ? 'Worker started; still warming up' : undefined);
       }
@@ -1139,8 +1196,28 @@ async function main() {
       // port — the port cannot be faked by a stale or clobbered file. Exit 0:
       // duplicate suppression is a success, not a failure.
       if (await isPortInUse(port)) {
-        logger.info('SYSTEM', 'Port already in use, refusing to start duplicate', { port });
-        process.exit(0);
+        // A live worker answers health — this is a genuine duplicate.
+        if (await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.HEALTH_CHECK))) {
+          logger.info('SYSTEM', 'Worker already running (health verified), refusing to start duplicate', { port });
+          process.exit(0);
+        }
+        // Bound but silent: likely a ghost listener — a dead worker whose
+        // surviving chroma sidecar chain holds the inherited socket
+        // (plan-15 #3603). Reclaim when the owner is provably dead; a live
+        // owner (wedged worker, foreign process) keeps the duplicate refusal.
+        const reclaim = await reclaimGhostListeningPort(port);
+        if (reclaim.reclaimed) {
+          logger.info('SYSTEM', 'Reclaimed ghost listener left by a dead worker — starting anyway', {
+            port,
+            killedPids: reclaim.killedPids,
+          });
+        } else {
+          logger.info('SYSTEM', 'Port already in use, refusing to start duplicate', {
+            port,
+            reclaimReason: reclaim.reason,
+          });
+          process.exit(0);
+        }
       }
 
       // PID file second, ADVISORY only: it covers a dying-but-still-alive
