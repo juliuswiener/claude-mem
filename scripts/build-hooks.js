@@ -607,7 +607,11 @@ async function buildHooks() {
       'plugin/.claude-plugin/plugin.json',
       'plugin/.mcp.json',
       '.agents/plugins/marketplace.json',
-      'dist/bug-report/index.js',
+      // 'dist/bug-report/index.js' — bei upstream unerfuellbar und hier
+      // gegenstandslos: tsconfig.json schliesst nur src/**/* ein, scripts/bug-report
+      // liegt ausserhalb, und es gibt keinen zweiten tsconfig. Kein Schritt in
+      // package.json kann die Datei erzeugen. Dieser Fork liefert das
+      // bug-report-Kommando ohnehin nicht aus.
     ];
     for (const filePath of requiredDistributionFiles) {
       if (!fs.existsSync(filePath)) {
