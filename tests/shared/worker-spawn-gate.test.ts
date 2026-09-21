@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -14,6 +14,7 @@ import { join } from 'path';
 // The module under test is unaffected: it resolves its lock path at call time
 // via resolveDataDir(), not via paths.ts's frozen const.
 import '../../src/shared/paths.js';
+import { logger } from '../../src/utils/logger.js';
 
 // The spawn gate's lock path comes from resolveDataDir() (src/shared/paths.ts),
 // which consults CLAUDE_MEM_DATA_DIR — so the env var MUST point at the temp
@@ -163,6 +164,75 @@ describe('acquireSpawnLock: holder liveness', () => {
     const { acquireSpawnLock } = await import('../../src/shared/worker-spawn-gate.js');
     writeFileSync(lockPath(), 'not json at all');
     expect(acquireSpawnLock()).toBe(false);   // fresh by mtime, pid unreadable
+    unlinkSync(lockPath());
+  });
+});
+
+// A held lock is normal contention; a RUN of held locks means no worker ever
+// started and nothing is being recorded. That run is the only thing that
+// distinguishes the two, and until now it was invisible: every miss logged the
+// same info line, and a reader could not tell the first from the fifth.
+describe('acquireSpawnLock: a run of misses becomes visible', () => {
+  const lockPath = () => join(process.env.CLAUDE_MEM_DATA_DIR!, 'spawn.lock');
+  let warnSpy: ReturnType<typeof spyOn>;
+  let tempDir: string;
+
+  // The miss counter outlives the process on purpose, so it also outlives a
+  // test. Every describe above leaves misses behind in the shared per-run data
+  // dir; without an own dir this block would start mid-run and warn on its
+  // first attempt.
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-spawn-misses-'));
+    process.env.CLAUDE_MEM_DATA_DIR = tempDir;
+    warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    if (ORIGINAL_DATA_DIR === undefined) {
+      delete process.env.CLAUDE_MEM_DATA_DIR;
+    } else {
+      process.env.CLAUDE_MEM_DATA_DIR = ORIGINAL_DATA_DIR;
+    }
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  // Hold the lock with this very process's pid: alive and fresh, so every
+  // acquire attempt yields — the shape of the 2026-09-08 outage.
+  function holdLock(): void {
+    writeFileSync(lockPath(), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+  }
+
+  it('stays quiet for two misses and warns on the third', async () => {
+    const { acquireSpawnLock } = await import('../../src/shared/worker-spawn-gate.js');
+    holdLock();
+
+    expect(acquireSpawnLock()).toBe(false);
+    expect(acquireSpawnLock()).toBe(false);
+    expect(warnSpy).not.toHaveBeenCalled();   // twice is contention, not an outage
+
+    expect(acquireSpawnLock()).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+    expect(String(warnSpy.mock.calls[0]?.[1] ?? '')).toContain('nothing is being recorded');
+
+    unlinkSync(lockPath());
+  });
+
+  it('a successful acquire resets the run', async () => {
+    const { acquireSpawnLock, releaseSpawnLock } = await import('../../src/shared/worker-spawn-gate.js');
+    holdLock();
+    expect(acquireSpawnLock()).toBe(false);
+    expect(acquireSpawnLock()).toBe(false);
+
+    unlinkSync(lockPath());
+    expect(acquireSpawnLock()).toBe(true);    // a worker got spawned -> run is over
+    releaseSpawnLock();
+
+    holdLock();
+    expect(acquireSpawnLock()).toBe(false);
+    expect(acquireSpawnLock()).toBe(false);
+    expect(warnSpy).not.toHaveBeenCalled();   // 2 + 2 is not 4 in a row
+
     unlinkSync(lockPath());
   });
 });

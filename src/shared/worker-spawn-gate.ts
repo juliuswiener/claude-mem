@@ -77,6 +77,78 @@ function getSpawnLockPath(): string {
  * so the mtime rule stays in charge. This must never be the thing that decides
  * to break a lock on its own.
  */
+/**
+ * One held lock is ordinary contention: two launchers started at once and one
+ * yielded, which is the whole purpose of the lock. A RUN of held locks is a
+ * different animal — no worker ever came up, and every hook since has silently
+ * dropped its observations. In the log the two are indistinguishable; both
+ * produce "Another launcher holds the spawn lock" at info level, which is why
+ * the 2026-09-08 outage ran for two minutes and four consecutive failed start
+ * attempts before anyone noticed.
+ *
+ * So count the run and warn from the third miss on. Two in a row stays quiet.
+ *
+ * The count MUST outlive the process: every hook invocation is its own process,
+ * so an in-memory counter would be reset by exactly the thing it is counting.
+ */
+const SPAWN_LOCK_MISS_WARN_AT = 3;
+
+/**
+ * Misses further apart than this are not a run. Without the window, one yield
+ * today plus two next month would eventually warn about an outage that never
+ * happened. The real failure mode fires hook-to-hook, seconds apart.
+ */
+const SPAWN_LOCK_MISS_RUN_MS = 5 * 60_000;
+
+function getMissCounterPath(): string {
+  return join(resolveDataDir(), 'spawn-lock-misses.json');
+}
+
+/**
+ * Extend the current run of misses and warn once it is long enough to mean
+ * "nothing is being recorded". Every read and write here is best-effort: this
+ * counter is a diagnostic and must never become a second thing that can refuse
+ * a spawn. An unreadable counter simply starts a new run.
+ */
+function recordSpawnLockMiss(lockPath: string): void {
+  const counterPath = getMissCounterPath();
+  let misses = 0;
+  try {
+    const prev = JSON.parse(readFileSync(counterPath, 'utf8'));
+    if (typeof prev?.misses === 'number' && typeof prev?.lastAt === 'number' &&
+        Date.now() - prev.lastAt <= SPAWN_LOCK_MISS_RUN_MS) {
+      misses = prev.misses;
+    }
+  } catch {
+    // No counter yet, or unreadable — this miss starts the run.
+  }
+  misses += 1;
+  try {
+    mkdirSync(dirname(counterPath), { recursive: true });
+    writeFileSync(counterPath, JSON.stringify({ misses, lastAt: Date.now() }));
+  } catch {
+    // Cannot persist the run; the warning below still fires for this miss.
+  }
+  if (misses >= SPAWN_LOCK_MISS_WARN_AT) {
+    // ponytail: log-level warning only. Reaching the user's session would mean
+    // a hook returning a message, which is a decision about claude-mem's hook
+    // output contract, not a fix for this counter.
+    logger.warn('SYSTEM',
+      `Spawn lock held on ${misses} launch attempts in a row — no worker came up, so nothing is being recorded. ` +
+      `If ${lockPath} names a pid that no longer exists, delete it.`,
+      { lockPath, consecutiveMisses: misses });
+  }
+}
+
+/** A spawn went ahead, so whatever run was building is over. */
+function clearSpawnLockMisses(): void {
+  try {
+    unlinkSync(getMissCounterPath());
+  } catch {
+    // Nothing to clear.
+  }
+}
+
 function holderIsAlive(lockPath: string): boolean {
   let pid: unknown;
   try {
@@ -99,6 +171,16 @@ function holderIsAlive(lockPath: string): boolean {
 
 export function acquireSpawnLock(): boolean {
   const lockPath = getSpawnLockPath();
+  const acquired = tryAcquireSpawnLock(lockPath);
+  if (acquired) {
+    clearSpawnLockMisses();
+  } else {
+    recordSpawnLockMiss(lockPath);
+  }
+  return acquired;
+}
+
+function tryAcquireSpawnLock(lockPath: string): boolean {
   const payload = JSON.stringify({
     pid: process.pid,
     startedAt: new Date().toISOString(),
