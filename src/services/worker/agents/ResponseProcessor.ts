@@ -11,8 +11,6 @@ import {
 } from '../../../sdk/output-classifier.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
-import { notifyGrokBotAwareness } from '../../integrations/GrokBotAwarenessPusher.js';
-import { notifyGrokBotIndex } from '../../integrations/GrokBotIndexWriter.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { recordObserverSuccess } from '../../../shared/observer-health.js';
@@ -693,18 +691,6 @@ export async function processAgentResponse(
     project: observationProject,
     memorySessionId: session.memorySessionId,
   });
-
-  void notifyGrokBotAwareness({
-    observations: labeledObservations,
-    observationIds: result.observationIds,
-    project: context.project,
-    memorySessionId: session.memorySessionId,
-    agentId: context.pendingAgentId,
-  });
-
-  // Growing Grok Bot INDEX: any new observation (any project) can fill a
-  // thin seat diary via the house fallback, so refresh all mapped seats.
-  notifyGrokBotIndex();
 
   await syncAndBroadcastObservations(
     labeledObservations,

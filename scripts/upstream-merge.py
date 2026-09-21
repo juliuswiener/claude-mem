@@ -49,33 +49,38 @@ def deleted_by_us(base, ours):
             if ln.startswith("D\t")}
 
 
-def broken_imports(gone):
-    """Importiert der BEHALTENE Baum noch einen entfernten Pfad?
+TS2307 = re.compile(r"^(\S+?)\(\d+,\d+\): error TS2307: Cannot find module '([^']+)'")
 
-    Aufgeloest, nicht geraten. Der erste Entwurf suchte den Dateistamm im Text und
-    meldete "SKILL.md wird erwaehnt in worker-service.cjs" -- ein Treffer auf das
-    Wort "SKILL". Nur ein Importpfad, der auf eine entfernte Datei zeigt, bricht
-    wirklich etwas.
+
+def broken_imports(gone=frozenset()):
+    """Welche Importe zeigen ins Leere? Gefragt wird der Compiler, nicht ein Regex.
+
+    Drei Entwuerfe, und die ersten beiden waren beide Selbstbau:
+
+    1. Dateistamm im Text suchen -- meldete "SKILL.md wird erwaehnt in
+       worker-service.cjs", ein Treffer auf das Wort "SKILL".
+    2. Importpfad gegen `gone` pruefen, also gegen "was haben WIR entfernt".
+       Uebersah `GrokBotAwarenessPusher`, weil die Datei nie im gemeinsamen
+       Vorfahren stand und ihr Wegfall in keinem git-Diff auftaucht.
+    3. "jeder relative Import muss auf eine existierende Datei zeigen" -- richtig
+       gedacht, aber selbst aufgeloest: elf Fehlalarme gegen einen Baum, den tsc
+       fehlerfrei uebersetzt (dynamische Importe relativ zum Arbeitsverzeichnis,
+       ein absichtlich erfundenes Modul in einem Test).
+
+    Also den Compiler fragen. `tsc` loest Module korrekt auf, inklusive Pfad-Alias
+    und Typdeklaration; TS2307 ist genau "Cannot find module". Was tsc NICHT sagen
+    kann, ist ob ein fehlendes Modul zu einem subtrahierten Feature gehoert -- das
+    bleibt die Aufgabe hier.
+
+    Voraussetzung: keine Konfliktmarkierungen mehr im Baum, sonst scheitert tsc am
+    Parsen statt am Aufloesen. `resolve` laeuft deshalb vorher.
     """
+    p = subprocess.run(["npx", "tsc", "--noEmit"], capture_output=True, text=True)
     hits = []
-    for kp in git("ls-files").splitlines():
-        if not kp.endswith(CODE) or kp.startswith(BUILT) or kp in gone:
-            continue
-        try:
-            with open(kp, encoding="utf-8", errors="ignore") as fh:
-                text = fh.read()
-        except OSError:
-            continue
-        for spec in SPEC.findall(text):
-            if not spec.startswith("."):
-                continue                      # Paketname, kein Pfad in diesem Baum
-            t = os.path.normpath(os.path.join(os.path.dirname(kp), spec))
-            stem = t[:-3] if t.endswith(".js") else t
-            for cand in (t, *(stem + e for e in CODE),
-                         *(f"{stem}/index{e}" for e in CODE)):
-                if cand in gone:
-                    hits.append((kp, spec, cand))
-                    break
+    for line in (p.stdout + p.stderr).splitlines():
+        m = TS2307.match(line.strip())
+        if m and m.group(1) not in gone:
+            hits.append((m.group(1), m.group(2), m.group(2)))
     return hits
 
 
