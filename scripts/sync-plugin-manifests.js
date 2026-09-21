@@ -22,12 +22,30 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + '\n');
 }
 
+// Dieser Fork heisst als Plugin `nord-mem`, damit er neben dem installierten
+// `claude-mem` stehen kann, ohne mit ihm zu kollidieren. Der Name darf deshalb
+// NICHT aus package.json kommen:
+//
+//   - `pkg.name` ist der npm-Paketname und traegt die Modulaufloesung. Ihn
+//     umzubenennen bricht jede Stelle, die das eigene Paket ueber seinen Namen
+//     findet -- fuer nord-core ist genau dieser Bruch belegt.
+//   - Der Plugin-Name ist demgegenueber reine Identitaet gegenueber Claude Code.
+//
+// `ecd5daca` benannte den Fork in plugin.json und marketplace.json um, aber nicht
+// hier -- und weil plugin.json aus package.json ERZEUGT wird, setzte der erste
+// Bau danach den Namen still auf `claude-mem` zurueck. Aufgefallen ist es erst
+// beim Umschalten am 2026-09-21, an der installierten Kopie.
+const PLUGIN_NAME = 'nord-mem';
+const PLUGIN_DESCRIPTION =
+  'Memory compression for Claude Code — nord fork of thedotmack/claude-mem: ' +
+  'subtracted, per-tool-cwd attribution, observer must state where and why';
+
 function syncClaudePlugin(plugin, pkg) {
   return {
     ...plugin,
-    name: pkg.name,
+    name: PLUGIN_NAME,
     version: pkg.version,
-    description: pkg.description,
+    description: PLUGIN_DESCRIPTION,
     homepage: pkg.homepage,
     repository: normalizeRepositoryUrl(pkg.repository),
     license: pkg.license,
