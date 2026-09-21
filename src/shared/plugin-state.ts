@@ -5,7 +5,18 @@ import { homedir } from 'os';
 import { logger } from '../utils/logger.js';
 import { parseJsonWithBom } from './atomic-json.js';
 
-const PLUGIN_SETTINGS_KEY = 'claude-mem@thedotmack';
+// Der Schluessel, unter dem DIESES Plugin in ~/.claude/settings.json steht --
+// fuer den Fork also `nord-mem@nord-local`, nicht upstreams Eintrag.
+//
+// Stand bis zum 2026-09-21 auf 'claude-mem@thedotmack' und war damit genau
+// verkehrt herum: wer den Fork aktiviert, schaltet upstream ab, und der Worker
+// des Forks las das als "ich bin ausgeschaltet" und beendete sich mit exit(0) --
+// ohne Ausgabe, ohne Logzeile, weil aus seiner Sicht nichts falsch war. Der
+// Umstieg scheiterte daran dreimal und wurde jedes Mal woanders gesucht.
+//
+// Die Sperre selbst ist richtig: ein abgeschaltetes Plugin soll keinen Worker
+// starten. Nur muss sie nach dem eigenen Eintrag sehen.
+const PLUGIN_SETTINGS_KEY = 'nord-mem@nord-local';
 
 export function isPluginDisabledInClaudeSettings(): boolean {
   try {
