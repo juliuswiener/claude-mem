@@ -91,10 +91,18 @@ function isPluginDisabledInClaudeSettings() {
     // Node that any host might invoke it with. Some Claude Code installs run
     // hooks under a bundled pre-ES2020 Node whose ESM loader throws
     // "SyntaxError: Unexpected token '.'" on `?.` (issue #2791).
+    // Der Schluessel dieses Plugins, nicht upstreams. Er stand hier bis zum
+    // 2026-09-22 auf 'claude-mem@thedotmack' -- und weil genau dieser Eintrag
+    // beim Umschalten auf den Fork auf false gesetzt wird, hat diese Schale
+    // JEDEN der acht Hooks stillschweigend mit exit(0) beendet: keine Ausgabe,
+    // keine Logzeile, kein Fehlerzaehler. Neunzehn Stunden ohne Aufzeichnung.
+    // Der Fix eb52f9c0 hat dieselbe Pruefung in src/shared/plugin-state.ts
+    // korrigiert und diese zweite Kopie uebersehen -- sie ist ein eigenstaendiges
+    // Launcher-Skript und laeuft nicht durch jenes Modul.
     return Boolean(
       settings &&
       settings.enabledPlugins &&
-      settings.enabledPlugins['claude-mem@thedotmack'] === false
+      settings.enabledPlugins['nord-mem@nord-local'] === false
     );
   } catch {
     return false;
