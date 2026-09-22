@@ -217,7 +217,7 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     const command = mcp.mcpServers['mcp-search'].args.join(' ');
 
     expect(command).toContain('.codex/plugins/cache/claude-mem-local/claude-mem');
-    expect(command).toContain('plugins/cache/thedotmack/claude-mem');
+    expect(command).toContain('plugins/cache/nord-local/nord-mem');
     expect(command).toContain('claude-mem: mcp server not found');
   });
 });
@@ -264,7 +264,7 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
   });
 
   it('should include CLAUDE_PLUGIN_ROOT fallback in all hook commands (#1215)', () => {
-    const expectedFallbackPath = '$_C/plugins/marketplaces/thedotmack/plugin';
+    const expectedFallbackPath = '$_C/plugins/marketplaces/nord-local/plugin';
 
     for (const command of commandHooksFrom('plugin/hooks/hooks.json')) {
       expect(command).toContain(expectedFallbackPath);
@@ -272,8 +272,8 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
   });
 
   it('should try cache path before marketplaces fallback in all hook commands (#1533)', () => {
-    const cachePath = '$_C/plugins/cache/thedotmack/claude-mem';
-    const marketplacesPath = '$_C/plugins/marketplaces/thedotmack/plugin';
+    const cachePath = '$_C/plugins/cache/nord-local/nord-mem';
+    const marketplacesPath = '$_C/plugins/marketplaces/nord-local/plugin';
 
     for (const command of commandHooksFrom('plugin/hooks/hooks.json')) {
       expect(command).toContain(cachePath);
@@ -306,13 +306,13 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
     expect(command).toContain('.claude');
     expect(command).toContain('CLAUDE_PLUGIN_ROOT');
     expect(command).toContain('PLUGIN_ROOT');
-    expect(command).toContain('plugins/marketplaces/thedotmack/plugin');
-    expect(command).toContain('plugins/cache/thedotmack/claude-mem');
+    expect(command).toContain('plugins/marketplaces/nord-local/plugin');
+    expect(command).toContain('plugins/cache/nord-local/nord-mem');
     expect(command).toContain('mcp-server.cjs');
     // No bare absolute "/scripts/..." path leaks through.
     expect(command).not.toContain('"/scripts/mcp-server.cjs"');
-    expect(command.indexOf('plugins/cache/thedotmack/claude-mem')).toBeLessThan(
-      command.indexOf('plugins/marketplaces/thedotmack/plugin')
+    expect(command.indexOf('plugins/cache/nord-local/nord-mem')).toBeLessThan(
+      command.indexOf('plugins/marketplaces/nord-local/plugin')
     );
   });
 
@@ -321,12 +321,12 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
       expect(command).toContain('${CLAUDE_CONFIG_DIR:-$HOME/.claude}');
       expect(command).toContain('export PATH=');
       expect(command).toContain('while IFS= read -r _R');
-      expect(command).toContain('$_C/plugins/marketplaces/thedotmack/plugin');
-      expect(command).toContain('$_C/plugins/cache/thedotmack/claude-mem');
+      expect(command).toContain('$_C/plugins/marketplaces/nord-local/plugin');
+      expect(command).toContain('$_C/plugins/cache/nord-local/nord-mem');
       expect(command).toContain('[ -f "$_Q/scripts/');
       expect(command).toContain('command -v cygpath');
-      expect(command.indexOf('$_C/plugins/cache/thedotmack/claude-mem')).toBeLessThan(
-        command.indexOf('$_C/plugins/marketplaces/thedotmack/plugin')
+      expect(command.indexOf('$_C/plugins/cache/nord-local/nord-mem')).toBeLessThan(
+        command.indexOf('$_C/plugins/marketplaces/nord-local/plugin')
       );
     }
   });
@@ -335,8 +335,8 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
     for (const command of commandHooksFrom('plugin/hooks/hooks.json')) {
       expect(command).toContain('${CLAUDE_CONFIG_DIR:-$HOME/.claude}');
       expect(command).toContain('while IFS= read -r _R');
-      expect(command).toContain('$_C/plugins/marketplaces/thedotmack/plugin');
-      expect(command).toContain('$_C/plugins/cache/thedotmack/claude-mem');
+      expect(command).toContain('$_C/plugins/marketplaces/nord-local/plugin');
+      expect(command).toContain('$_C/plugins/cache/nord-local/nord-mem');
       expect(command).toContain('[ -f "$_Q/scripts/');
       expect(command).not.toContain('$HOME/.claude/plugins/');
     }
@@ -505,7 +505,7 @@ const MCP_EXPECTED = buildShellCommand({
   mcpExtraCandidates: ['$PWD/plugin', '$PWD'],
   mcpExtraCacheRoots: [
     '$HOME/.codex/plugins/cache/claude-mem-local/claude-mem',
-    '$HOME/.codex/plugins/cache/thedotmack/claude-mem',
+    '$HOME/.codex/plugins/cache/nord-local/nord-mem',
   ],
 });
 
@@ -609,7 +609,7 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
 
   it('resolves _P from the cache directory when CLAUDE_PLUGIN_ROOT is unset', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
-    const cacheRoot = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
+    const cacheRoot = path.join(home, '.claude', 'plugins', 'cache', 'nord-local', 'nord-mem', '99.0.0');
     mkdirSync(path.join(cacheRoot, 'scripts'), { recursive: true });
     writeFileSync(path.join(cacheRoot, 'scripts', 'version-check.js'), '');
     writeFileSync(path.join(cacheRoot, 'scripts', 'bun-runner.js'), '');
@@ -628,7 +628,7 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
 
   it('prefers the highest cache version over the newest mtime and skips .orphaned_at dirs (2026-07-22 restart storm)', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
-    const cacheBase = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
+    const cacheBase = path.join(home, '.claude', 'plugins', 'cache', 'nord-local', 'nord-mem');
     const makeVersion = (version: string) => {
       const root = path.join(cacheBase, version);
       mkdirSync(path.join(root, 'scripts'), { recursive: true });
