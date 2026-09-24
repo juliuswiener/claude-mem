@@ -4,7 +4,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
 import { stripMemoryTags } from '../../../utils/tag-stripping.js';
-import { isProjectExcluded } from '../../../utils/project-filter.js';
+import { isProjectExcluded, matchesAnyGlob } from '../../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { getProjectContext } from '../../../utils/project-name.js';
@@ -77,10 +77,11 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     return { ok: true, status: 'skipped', reason: 'project_excluded' };
   }
 
-  const skipTools = new Set(
-    settings.CLAUDE_MEM_SKIP_TOOLS.split(',').map(t => t.trim()).filter(Boolean)
-  );
-  if (skipTools.has(payload.toolName)) {
+  // `*` is allowed (`mcp__plugin_nord-core_t__*`): an exact-name list missed
+  // every MCP tool, and the MCP shell was 65 % of all queued calls
+  // (aufgezeichnet-wird-was-sonst-verloren-waere).
+  const skipTools = settings.CLAUDE_MEM_SKIP_TOOLS.split(',').map(t => t.trim()).filter(Boolean);
+  if (matchesAnyGlob(payload.toolName, skipTools)) {
     if (payload.toolName === 'Skill') {
       const { skill_id, skill_source } = classifySkillId(
         skillNameFromToolInput(payload.toolName, payload.toolInput),
