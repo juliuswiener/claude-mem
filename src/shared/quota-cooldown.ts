@@ -57,6 +57,7 @@ interface PersistedQuotaCooldown {
   message: string;
   window?: string;
   armedAtMs: number;
+  resetsAtMs?: number;
 }
 
 function defaultCooldownFilePath(): string {
@@ -80,6 +81,7 @@ function hydrateFromDisk(filePath: string = defaultCooldownFilePath()): void {
         message: entry.message ?? 'Provider reported the inference allowance exhausted',
         ...(entry.window ? { window: entry.window } : {}),
         armedAtMs: entry.armedAtMs,
+        ...(entry.resetsAtMs !== undefined ? { resetsAtMs: entry.resetsAtMs } : {}),
         // Never restored: the process that could have held this is gone.
         probeInFlightSinceMs: null,
         probeClaimId: null,
@@ -104,6 +106,7 @@ function persistToDisk(filePath: string = defaultCooldownFilePath()): void {
       message: state.message,
       ...(state.window ? { window: state.window } : {}),
       armedAtMs: state.armedAtMs,
+      ...(state.resetsAtMs !== undefined ? { resetsAtMs: state.resetsAtMs } : {}),
     }));
     const tmp = `${filePath}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(rows, null, 2), 'utf-8');
@@ -122,6 +125,46 @@ function persistToDisk(filePath: string = defaultCooldownFilePath()): void {
 export const QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS = 30 * 60_000;
 
 /**
+ * Normalise a provider-reported epoch to milliseconds, or undefined when the
+ * value cannot be one.
+ *
+ * Claude Code has been seen writing `resetsAt` as epoch SECONDS in transcripts
+ * while the SDK documents epoch ms, so anything too small to be ms is read as
+ * seconds. This lives here rather than in RateLimitStore because both the
+ * breaker (shared) and the rate-limit surface (worker) need it, and a second
+ * copy of the same conversion is the shape that has already cost this fork two
+ * outages — see decisions/abschalten-genuegt-nicht-wo-zwei-installationen-…
+ */
+export function epochToMs(value: number | undefined | null): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
+  return value < 1e12 ? value * 1000 : value;
+}
+
+/**
+ * When the breaker for `state` should open.
+ *
+ * The provider's own reset time wins wherever it gives one: the constant above
+ * only ever approximated it, and on 2026-09-21 it held the breaker shut six
+ * minutes past an already-open window — once per five-hour window, while
+ * sessions piled unprocessed observations in memory.
+ *
+ * It may also end LATER than the constant. That is deliberate: probing before
+ * the named time spends a request on a guaranteed refusal.
+ *
+ * A reset time that is not a usable number, or that does not lie after the
+ * moment the breaker was armed, is not a reset time — the constant carries
+ * those.
+ */
+export function quotaCooldownEndsAtMs(
+  state: QuotaCooldownState,
+  cooldownMs: number = QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+): number {
+  const reported = epochToMs(state.resetsAtMs);
+  if (reported !== undefined && reported > state.armedAtMs) return reported;
+  return state.armedAtMs + cooldownMs;
+}
+
+/**
  * How long a claimed probe may stay unresolved before another caller may take
  * it. A generator that dies without reaching any completion path would
  * otherwise hold the claim forever and wedge the provider permanently — the
@@ -136,6 +179,12 @@ export interface QuotaCooldownState {
   /** Window the provider named, when it named one (e.g. 'weekly'). */
   window?: string;
   armedAtMs: number;
+  /**
+   * The reset time the provider reported, epoch seconds OR ms (the client
+   * writes both — `epochToMs` sorts it out). Absent when the refusal named
+   * none, and then the constant decides. See `quotaCooldownEndsAtMs`.
+   */
+  resetsAtMs?: number;
   /**
    * When the single post-expiry probe was claimed, or null when none is in
    * flight. Without this the expiry check is a bare read: every concurrent
@@ -187,6 +236,12 @@ export function recordQuotaExhausted(
    * cooldown on every restart.
    */
   armedAtMs: number = Date.now(),
+  /**
+   * The reset time the provider reported, when it reported one. Epoch seconds
+   * or ms; a value that is unusable or not after `armedAtMs` is ignored and the
+   * constant decides.
+   */
+  resetsAtMs?: number,
 ): QuotaCooldownState {
   hydrateFromDisk();
   const state: QuotaCooldownState = {
@@ -194,6 +249,7 @@ export function recordQuotaExhausted(
     message,
     ...(window ? { window } : {}),
     armedAtMs,
+    ...(epochToMs(resetsAtMs) !== undefined ? { resetsAtMs } : {}),
     // Re-arming ends whatever probe was in flight: this IS that probe failing.
     probeInFlightSinceMs: null,
     probeClaimId: null,
@@ -233,7 +289,7 @@ export function isQuotaCooldownActive(
   hydrateFromDisk();
   const state = cooldowns.get(provider);
   if (!state) return false;
-  return nowMs - state.armedAtMs < cooldownMs;
+  return nowMs < quotaCooldownEndsAtMs(state, cooldownMs);
 }
 
 /**
@@ -262,7 +318,7 @@ export function tryAdmitQuotaProbe(
   const state = cooldowns.get(provider);
   if (!state) return { admitted: true, claimId: null };
 
-  if (nowMs - state.armedAtMs < cooldownMs) {
+  if (nowMs < quotaCooldownEndsAtMs(state, cooldownMs)) {
     return { admitted: false, claimId: null };
   }
 

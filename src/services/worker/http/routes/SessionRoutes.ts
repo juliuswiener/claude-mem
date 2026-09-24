@@ -39,13 +39,29 @@ import {
   recordQuotaExhausted,
   getQuotaCooldown,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  quotaCooldownEndsAtMs,
 } from '../../../../shared/quota-cooldown.js';
+import { globalRateLimitStore, type RateLimitWindow } from '../../RateLimitStore.js';
 import { isClassified, describeProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 import { isSessionParkedForSlot } from '../../../../supervisor/process-registry.js';
 import type { TelegramWrapupFormatterInput } from '../../../integrations/TelegramWrapupNotifier.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
+
+/**
+ * Die Ruecksetzzeit, die der Anbieter fuer dieses Fenster gemeldet hat.
+ *
+ * Der RateLimitStore fuellt sich aus den `rate_limit`-Ereignissen des SDK und
+ * haelt `resetsAt` je Fenster; die Sperre hat ihn nie gefragt und stattdessen
+ * dreissig Minuten geraten. Ohne Fensterangabe gilt das Fuenf-Stunden-Fenster:
+ * das ist das einzige, das je ausgeloest hat (das Sieben-Tage-Fenster stand bei
+ * 11 %), und `get(undefined)` wuerde den 'default'-Eimer liefern statt dessen.
+ */
+function reportedResetsAtMs(window?: string): number | undefined {
+  const key = (window || 'five_hour') as RateLimitWindow;
+  return globalRateLimitStore.get(key)?.resetsAt;
+}
 
 /**
  * Collapse session.abortReason onto a closed telemetry enum. The raw value can
@@ -305,8 +321,13 @@ export class SessionRoutes extends BaseRouteHandler {
         provider: selectedProvider,
         ...(cooldown?.window ? { window: cooldown.window } : {}),
         probeInFlight: cooldown?.probeInFlightSinceMs !== null,
+        // Dieselbe Quelle wie die Sperre selbst: nennt der Anbieter eine
+        // Ruecksetzzeit, zaehlt der Countdown auf sie und nicht auf die
+        // Konstante. Zwei Rechnungen fuer denselben Zeitpunkt waren der Grund,
+        // dass der Log bis 10:16:03 herunterzaehlte, obwohl das Fenster um
+        // 10:10:00 offen war.
         retryInMs: cooldown
-          ? Math.max(0, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - (Date.now() - cooldown.armedAtMs))
+          ? Math.max(0, quotaCooldownEndsAtMs(cooldown) - Date.now())
           : 0,
       });
       return;
@@ -444,7 +465,8 @@ export class SessionRoutes extends BaseRouteHandler {
           // A structured quota refusal arms the breaker, so the next observation
           // does not immediately buy the same refusal again (#3634).
           if (isClassified(error) && error.kind === 'quota_exhausted') {
-            recordQuotaExhausted(provider, error.message);
+            recordQuotaExhausted(provider, error.message, undefined, Date.now(),
+              reportedResetsAtMs());
           }
           recordObserverFailure(provider, isClassified(error)
             ? { message: error.message, kind: error.kind, code: error.code, action: error.action, url: error.url, requestId: error.requestId }
@@ -485,7 +507,9 @@ export class SessionRoutes extends BaseRouteHandler {
         // per-observation request storm the classified path no longer has.
         if (normalizeAbortReason(reason) === 'quota') {
           const quotaMessage = 'Provider reported the inference allowance exhausted';
-          recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1]);
+          const quotaWindow = reason?.split(':')[1];
+          recordQuotaExhausted(provider, quotaMessage, quotaWindow, Date.now(),
+            reportedResetsAtMs(quotaWindow));
           // Quota returned as assistant prose never throws, so it never reaches
           // the .catch above and never armed the health ledger. Without this the
           // session-start warning is structurally blind to an entire outage

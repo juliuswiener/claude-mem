@@ -24,6 +24,59 @@ describe('quota cooldown breaker (#3634)', () => {
     resetQuotaCooldownsForTesting();
   });
 
+  // Der Anbieter nennt die Ruecksetzzeit. Die Sperre hat sie ignoriert und
+  // stattdessen pauschal 30 Minuten ab dem Fehler gewartet -- am 2026-09-21 sechs
+  // Minuten zu lang, bei jedem Fuenf-Stunden-Fenster erneut, und waehrend dieser
+  // Zeit stapeln die Sitzungen ihre Beobachtungen im Arbeitsspeicher.
+  describe('gemeldete Ruecksetzzeit schlaegt die Konstante', () => {
+    it('endet die Sperre zur gemeldeten Zeit, nicht nach der Konstante', () => {
+      const armedAt = 1_800_000_000_000;
+      const resetsAt = armedAt + 5 * 60_000;
+      recordQuotaExhausted('claude', 'spent', 'five_hour', armedAt, resetsAt);
+
+      expect(isQuotaCooldownActive('claude', resetsAt - 1_000)).toBe(true);
+      expect(isQuotaCooldownActive('claude', resetsAt + 1_000)).toBe(false);
+    });
+
+    it('haelt die Sperre, wenn der Anbieter spaeter als die Konstante zurueckstellt', () => {
+      const armedAt = 1_800_000_000_000;
+      const resetsAt = armedAt + 90 * 60_000;
+      recordQuotaExhausted('claude', 'spent', 'five_hour', armedAt, resetsAt);
+
+      // Nach der Konstante, aber vor der gemeldeten Zeit: Proben waere sinnlos.
+      expect(isQuotaCooldownActive('claude', armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1_000)).toBe(true);
+      expect(isQuotaCooldownActive('claude', resetsAt + 1_000)).toBe(false);
+    });
+
+    it('nimmt Sekunden wie Millisekunden -- der Klient schreibt beides', () => {
+      const armedAt = 1_800_000_000_000;
+      const resetsAtSeconds = Math.floor((armedAt + 5 * 60_000) / 1000);
+      recordQuotaExhausted('claude', 'spent', 'five_hour', armedAt, resetsAtSeconds);
+
+      expect(isQuotaCooldownActive('claude', armedAt + 4 * 60_000)).toBe(true);
+      expect(isQuotaCooldownActive('claude', armedAt + 6 * 60_000)).toBe(false);
+    });
+
+    it('faellt auf die Konstante zurueck, wo keine oder eine unsinnige Zeit kommt', () => {
+      const armedAt = 1_800_000_000_000;
+      for (const bogus of [undefined, 0, -1, NaN, armedAt - 60_000]) {
+        resetQuotaCooldownsForTesting();
+        recordQuotaExhausted('claude', 'spent', 'five_hour', armedAt, bogus as number | undefined);
+        expect(isQuotaCooldownActive('claude', armedAt + 29 * 60_000)).toBe(true);
+        expect(isQuotaCooldownActive('claude', armedAt + 31 * 60_000)).toBe(false);
+      }
+    });
+
+    it('die Probe wird zur gemeldeten Zeit zugelassen, nicht erst nach der Konstante', () => {
+      const armedAt = 1_800_000_000_000;
+      const resetsAt = armedAt + 5 * 60_000;
+      recordQuotaExhausted('claude', 'spent', 'five_hour', armedAt, resetsAt);
+
+      expect(tryAdmitQuotaProbe('claude', resetsAt - 1_000).admitted).toBe(false);
+      expect(tryAdmitQuotaProbe('claude', resetsAt + 1_000).admitted).toBe(true);
+    });
+  });
+
   // The breaker is process-global by design (a user's quota is per-account, not
   // per-session), so a cooldown left armed here would gate generator starts in
   // every later test file in this bun process.

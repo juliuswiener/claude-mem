@@ -29,6 +29,8 @@
  * users are exempt because they authorized per-call spend.
  */
 
+import { epochToMs } from '../../shared/quota-cooldown.js';
+
 export type RateLimitWindow =
   | 'five_hour'
   | 'seven_day'
@@ -145,8 +147,8 @@ export function isNewRejection(
  * documents epoch ms, so anything too small to be ms is treated as seconds.
  */
 export function minutesUntilReset(resetsAt: number | undefined, now: number = Date.now()): number | undefined {
-  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return undefined;
-  const resetsAtMs = resetsAt < 1e12 ? resetsAt * 1000 : resetsAt;
+  const resetsAtMs = epochToMs(resetsAt);
+  if (resetsAtMs === undefined) return undefined;
   return Math.max(0, Math.round((resetsAtMs - now) / 60_000));
 }
 
