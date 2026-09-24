@@ -148,7 +148,6 @@ describe('inline bootstrap resolvers stay in lockstep', () => {
     mcpExtraCandidates: ['$PWD/plugin', '$PWD'],
     mcpExtraCacheRoots: [
       '$HOME/.codex/plugins/cache/claude-mem-local/claude-mem',
-      '$HOME/.codex/plugins/cache/thedotmack/claude-mem',
     ],
   });
   const codexWindowsCommand = buildCodexWindowsCommand(['hook', 'codex', 'context']);

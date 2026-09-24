@@ -163,7 +163,7 @@ What is this for?
   const healthy = await checkWorkerHealth();
   if (!healthy) {
     console.log(`Worker is not running at ${WORKER_URL}. Start it with:`);
-    console.log('  cd ~/.claude/plugins/marketplaces/thedotmack && npm run worker:start\n');
+    console.log('  cd ~/.claude/plugins/marketplaces/nord-local && npm run worker:start\n');
     process.exit(1);
   }
   console.log(`Worker status: Running at ${WORKER_URL}\n`);

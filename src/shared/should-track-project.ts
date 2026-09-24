@@ -11,8 +11,8 @@ import {
 
 const PLUGINS_DIR_NAME = 'plugins';
 const PLUGIN_CACHE_DIR_NAME = 'cache';
-const CLAUDE_MEM_PLUGIN_OWNER = 'thedotmack';
-const CLAUDE_MEM_PLUGIN_NAME = 'claude-mem';
+const CLAUDE_MEM_PLUGIN_OWNER = 'nord-local';
+const CLAUDE_MEM_PLUGIN_NAME = 'nord-mem';
 const PLUGIN_RUNTIME_DIR_NAME = 'plugin';
 const PLUGIN_CACHE_ROOT = join(
   CLAUDE_CONFIG_DIR,
