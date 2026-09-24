@@ -115,3 +115,31 @@ describe('GET /health', () => {
     expect(readHealth().status).toBe('ok');
   });
 });
+
+// Vault: eine-subtrahierte-oberflaeche-antwortet-404. The fork ships no
+// viewer.html / tv.html; a missing UI is "not here" (404), not a server fault.
+describe('GET / and /tv without the subtracted UI', () => {
+  function call(route: string): { status: number; body: string } {
+    let status = 200;
+    let body = '';
+    const res = {
+      headersSent: false,
+      status(code: number) { status = code; return this; },
+      setHeader: () => {},
+      type() { return this; },
+      json: (b: unknown) => { body = JSON.stringify(b); },
+      send: (b: string) => { body = String(b); },
+    } as unknown as Response;
+    captureHandler(route)({ path: route } as Request, res);
+    return { status, body };
+  }
+
+  for (const route of ['/', '/tv']) {
+    it(`${route} answers 404, not 500`, () => {
+      expect(call(route).status).toBe(404);
+    });
+    it(`${route} says the UI is not part of this build`, () => {
+      expect(call(route).body).toContain('not part of this build');
+    });
+  }
+});

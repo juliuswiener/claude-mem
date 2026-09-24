@@ -179,8 +179,11 @@ export class ViewerRoutes extends BaseRouteHandler {
   });
 
   private handleViewerUI = this.wrapHandler((req: Request, res: Response): void => {
+    // nord fork: the UI is subtracted, so a missing file is "not here", not a
+    // server fault (vault: eine-subtrahierte-oberflaeche-antwortet-404).
     if (!viewerHtmlBytes) {
-      throw new Error('Viewer UI not found at any expected location');
+      res.status(404).send('The viewer UI is not part of this build.');
+      return;
     }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(viewerHtmlBytes);
@@ -193,7 +196,8 @@ export class ViewerRoutes extends BaseRouteHandler {
    */
   private handleTvUI = this.wrapHandler((req: Request, res: Response): void => {
     if (!tvHtmlBytes) {
-      throw new Error('Observation TV UI not found at any expected location');
+      res.status(404).send('The observation TV UI is not part of this build.');
+      return;
     }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(tvHtmlBytes);
