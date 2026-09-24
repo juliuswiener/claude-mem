@@ -9,7 +9,6 @@ import {
   isTransportFailureObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
-import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
@@ -945,9 +944,5 @@ async function syncAndBroadcastSummary(
     project: context.project,
     prompt_number: context.promptNumber,
     created_at_epoch: result.createdAtEpoch
-  });
-
-  updateCursorContextForProject(context.project).catch(error => {
-    logger.warn('CURSOR', 'Context update failed (non-critical)', { project: context.project }, error as Error);
   });
 }

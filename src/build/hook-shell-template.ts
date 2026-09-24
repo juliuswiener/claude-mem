@@ -3,8 +3,7 @@
  * generator (single source of truth).
  *
  * See `CLAUDE.md` → "Spawn-Contract Resolution". The host-owned config files
- * (`plugin/hooks/hooks.json`, `plugin/hooks/codex-hooks.json`,
- * `plugin/.mcp.json`) embed a defensive POSIX-shell prelude that resolves the
+ * (`plugin/hooks/hooks.json`, `plugin/.mcp.json`) embed a defensive POSIX-shell prelude that resolves the
  * plugin root from `${CLAUDE_PLUGIN_ROOT}` (or `${PLUGIN_ROOT}`), then falls
  * back through the host cache directories and the marketplace install dir.
  * Some host versions / cache rotations do NOT inject `CLAUDE_PLUGIN_ROOT`, so
@@ -21,7 +20,7 @@
  *   4. $_C/plugins/marketplaces/nord-local/plugin (marketplace install)
  */
 
-export type ShellTemplateHost = 'claude-code' | 'claude-code-setup' | 'codex-cli' | 'mcp';
+export type ShellTemplateHost = 'claude-code' | 'claude-code-setup' | 'mcp';
 
 export interface ShellTemplateOptions {
   /** Host whose spawn contract / PATH prelude applies. */
@@ -38,7 +37,7 @@ export interface ShellTemplateOptions {
    * so mcp callers may omit it.
    */
   trailingCommand?: string[];
-  /** Extra env exports prepended to the trailing command (e.g. CLAUDE_MEM_CODEX_HOOK=1). */
+  /** Extra env exports prepended to the trailing command. */
   extraEnv?: Record<string, string>;
   /** Optional trailing JSON echoed after the command (e.g. SessionStart continue marker). */
   trailingJson?: object;
@@ -51,7 +50,7 @@ export interface ShellTemplateOptions {
   mcpExtraCandidates?: string[];
   /**
    * MCP-only: additional cache roots tried (newest first) BEFORE the Claude
-   * cache root (e.g. Codex caches). Each entry is the cache root WITHOUT the
+   * cache root. Each entry is the cache root WITHOUT the
    * version-glob suffix (/[0-9]asterisk/), which the generator appends
    * uniformly. Ignored for non-mcp hosts.
    */
@@ -64,20 +63,11 @@ const CLAUDE_CODE_HOOK_PATH_PRELUDE =
   'export PATH="$HOME/.nvm/versions/node/v$(ls "$HOME/.nvm/versions/node" 2>/dev/null | ' +
   "sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\";";
 
-const CODEX_CLI_PATH_PRELUDE =
-  `_HP=$(printenv PATH 2>/dev/null || true); ` +
-  `if [ -z "$_HP" ] && [ -n "\${SHELL:-}" ]; then _HP=$("$SHELL" -lc 'printf %s "$PATH"' 2>/dev/null || true); fi; ` +
-  `_HP=$(printf '%s' "$_HP" | tr ' ' ':'); export PATH="\${_HP:+$_HP:}$PATH"; `;
-
 function pathPrelude(host: ShellTemplateHost): string {
   switch (host) {
     case 'claude-code':
     case 'claude-code-setup':
       return CLAUDE_CODE_HOOK_PATH_PRELUDE;
-    case 'codex-cli':
-      // Trailing space is intentional: join() adds one more → double space
-      // before `_C=`, matching the hand-authored codex-hooks.json.
-      return CODEX_CLI_PATH_PRELUDE;
     case 'mcp':
       return '';
   }
@@ -243,45 +233,6 @@ function jsArray(values: string[]): string {
   return `[${values.map(jsSingleQuoted).join(',')}]`;
 }
 
-/**
- * Codex hook contract supports `commandWindows` as the Windows-only command
- * override. Keep this Node-based so Codex App on Windows can execute hooks from
- * PowerShell without parsing POSIX shell syntax (OpenAI Codex hooks docs).
- */
-export function buildCodexWindowsCommand(
-  workerArgs: string[],
-): string {
-  const parts = [
-    "const fs=require('fs'),p=require('path'),o=require('os'),c=require('child_process');",
-    "const h=o.homedir();",
-    "const C=process.env.CLAUDE_CONFIG_DIR||p.join(h,'.claude');",
-    "const roots=[];",
-    "for(const v of [process.env.CLAUDE_PLUGIN_ROOT,process.env.PLUGIN_ROOT])if(v)roots.push(v);",
-    "const cache=p.join(C,'plugins','cache','nord-local','nord-mem');",
-    // S/W mirror compareVersionsDescending in src/shared/worker-utils.ts and
-    // the filter skips .orphaned_at-stamped cache dirs, same as
-    // cacheWorkerScriptCandidates — every resolver ranking candidates
-    // identically (by version, never mtime) is the restart-storm invariant.
-    "const S=n=>{const q=n.split('-')[0].split('.');return[parseInt(q[0],10)||0,parseInt(q[1],10)||0,parseInt(q[2],10)||0]};",
-    "const W=(a,b)=>{const x=S(a),y=S(b);return(y[0]-x[0])||(y[1]-x[1])||(y[2]-x[2])||((a.indexOf('-')<0?0:1)-(b.indexOf('-')<0?0:1))||(a<b?1:a>b?-1:0)};",
-    "try{roots.push(...fs.readdirSync(cache).filter(n=>{const ch=n.charAt(0);return ch>='0'&&ch<='9'}).map(n=>p.join(cache,n)).filter(r=>{try{return fs.statSync(r).isDirectory()&&!fs.existsSync(p.join(r,'.orphaned_at'))}catch{return false}}).sort((a,b)=>W(p.basename(a),p.basename(b))))}catch{}",
-    "roots.push(p.join(C,'plugins','marketplaces','nord-local','plugin'));",
-    "let R=null;",
-    "for(const k of roots){const r=fs.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(fs.existsSync(p.join(r,'scripts','bun-runner.js'))&&fs.existsSync(p.join(r,'scripts','worker-service.cjs'))){R=r;break}}",
-    "if(!R){process.stderr.write('claude-mem: plugin scripts not found\\n');process.exit(1)}",
-    "const env={...process.env,CLAUDE_MEM_CODEX_HOOK:'1'};",
-  ];
-
-  parts.push(
-    `const workerArgs=${jsArray(workerArgs)};`,
-    "const args=[p.join(R,'scripts','bun-runner.js'),p.join(R,'scripts','worker-service.cjs'),...workerArgs];",
-    "const res=c.spawnSync(process.execPath,args,{stdio:'inherit',env});",
-    "if(res.error){process.stderr.write(String(res.error.message||res.error)+'\\n');process.exit(1)}",
-    "process.exit(res.status==null?0:res.status)",
-  );
-
-  return `node -e "${parts.join('')}"`;
-}
 
 /**
  * Build the full single-line shell command string for a Rule A site.
@@ -298,9 +249,8 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   const parts: string[] = [];
 
   // The PATH prelude is pushed verbatim (including any trailing space). `parts`
-  // are later joined with a single space, so claude-code preludes (no trailing
-  // space) get one separator space, while the codex prelude (one trailing
-  // space) gets two — matching the hand-authored files exactly.
+  // are later joined with a single space, so the claude-code prelude (no
+  // trailing space) gets exactly one separator space before `_C=`.
   const prelude = pathPrelude(options.host);
   if (prelude) parts.push(prelude);
 
@@ -309,7 +259,7 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   parts.push(candidateBlock(options));
   parts.push(`[ -n "$_P" ] || { echo "${options.notFoundMessage}" >&2; exit 1; };`);
 
-  // cygpath conversion: claude-code + codex-cli. MCP returned early above (it
+  // cygpath conversion for the claude-code hosts. MCP returned early above (it
   // uses the Node launcher), so every host reaching here needs the clause.
   parts.push(CYGPATH_CLAUSE);
 

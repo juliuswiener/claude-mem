@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { buildCodexWindowsCommand, buildShellCommand } from '../../src/build/hook-shell-template.js';
+import { buildShellCommand } from '../../src/build/hook-shell-template.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
@@ -125,15 +125,12 @@ describe('Plugin Distribution - Skills', () => {
 describe('Plugin Distribution - Required Files', () => {
   const requiredFiles = [
     'plugin/hooks/hooks.json',
-    'plugin/hooks/codex-hooks.json',
     'plugin/.claude-plugin/plugin.json',
-    'plugin/.codex-plugin/plugin.json',
     'plugin/.mcp.json',
     'plugin/sqlite/SessionStore.js',
     'plugin/sqlite/observations/files.js',
     'plugin/skills/mem-search/SKILL.md',
     'plugin/skills/mode-creator/SKILL.md',
-    '.agents/plugins/marketplace.json',
     '.cursor-plugin/marketplace.json',
     'claude-mem-cursor/.cursor-plugin/plugin.json',
     'claude-mem-cursor/mcp.json',
@@ -151,72 +148,12 @@ describe('Plugin Distribution - Required Files', () => {
   }
 });
 
-describe('Plugin Distribution - Codex Marketplace', () => {
-  it('points Codex at the bundled plugin root', () => {
-    const marketplacePath = path.join(projectRoot, '.agents/plugins/marketplace.json');
-    const marketplace = JSON.parse(readFileSync(marketplacePath, 'utf-8'));
-
-    expect(marketplace.plugins[0].source.path).toBe('./plugin');
-  });
-
-  it('ships Codex hooks with only Codex-supported root keys', () => {
-    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
-    expect(Object.keys(codexHooks).sort()).toEqual(['hooks']);
-  });
-
-  it('re-injects Codex memory on every SessionStart source that starts a fresh context', () => {
-    // Codex emits startup, resume, clear and compact (SessionStartSource in
-    // codex-rs/hooks/src/events/session_start.rs). clear and compact both hand
-    // the model an empty context, so the injection hook has to run for them or
-    // the session continues with no memory.
-    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
-    const matchers = codexHooks.hooks.SessionStart.map((entry: any) => entry.matcher);
-
-    expect(matchers).toHaveLength(1);
-    for (const source of ['startup', 'resume', 'clear', 'compact']) {
-      expect(matchers[0].split('|')).toContain(source);
-    }
-  });
-
-  it('sets the Codex hook marker on every Codex command', () => {
-    for (const command of commandHooksFrom('plugin/hooks/codex-hooks.json')) {
-      expect(command).toContain('CLAUDE_MEM_CODEX_HOOK=1');
-    }
-  });
-
-  it('sets Windows Codex hook overrides without POSIX-only shell syntax', () => {
-    const entries = commandHookEntriesFrom('plugin/hooks/codex-hooks.json');
-    const posixOnlyTokens = ['$(', '${', '[ -', 'printenv', 'export PATH', 'command -v', '2>/dev/null', 'while IFS'];
-
-    expect(entries.length).toBeGreaterThan(0);
-    for (const entry of entries) {
-      expect(typeof entry.commandWindows).toBe('string');
-      expect(entry.commandWindows).toContain('node -e');
-      expect(entry.commandWindows).toContain('CLAUDE_MEM_CODEX_HOOK');
-      expect(entry.commandWindows).toContain('bun-runner.js');
-      expect(entry.commandWindows).toContain('worker-service.cjs');
-      expect(entry.commandWindows).toContain('plugins');
-      expect(entry.commandWindows).toContain('cache');
-      expect(entry.commandWindows).toContain('marketplaces');
-      for (const token of posixOnlyTokens) {
-        expect(entry.commandWindows).not.toContain(token);
-      }
-    }
-  });
-
-  it('ships a single Codex SessionStart command', () => {
-    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
-    expect(codexHooks.hooks.SessionStart[0].hooks).toHaveLength(1);
-    expect(codexHooks.hooks.SessionStart[0].hooks[0].command).not.toContain('version-check.js');
-    expect(codexHooks.hooks.SessionStart[0].hooks[0].commandWindows).not.toContain('version-check.js');
-  });
-
+describe('Plugin Distribution - MCP launcher', () => {
   it('MCP launcher can recover without plugin root environment variables', () => {
     const mcpPath = path.join(projectRoot, 'plugin/.mcp.json');
     const mcp = JSON.parse(readFileSync(mcpPath, 'utf-8'));
     const command = mcp.mcpServers['mcp-search'].args.join(' ');
 
-    expect(command).toContain('.codex/plugins/cache/claude-mem-local/claude-mem');
     expect(command).toContain('plugins/cache/nord-local/nord-mem');
     expect(command).toContain('claude-mem: mcp server not found');
   });
@@ -316,20 +253,6 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
     );
   });
 
-  it('Codex hook commands should have config-dir based non-empty fallbacks', () => {
-    for (const command of commandHooksFrom('plugin/hooks/codex-hooks.json')) {
-      expect(command).toContain('${CLAUDE_CONFIG_DIR:-$HOME/.claude}');
-      expect(command).toContain('export PATH=');
-      expect(command).toContain('while IFS= read -r _R');
-      expect(command).toContain('$_C/plugins/marketplaces/nord-local/plugin');
-      expect(command).toContain('$_C/plugins/cache/nord-local/nord-mem');
-      expect(command).toContain('[ -f "$_Q/scripts/');
-      expect(command).toContain('command -v cygpath');
-      expect(command.indexOf('$_C/plugins/cache/nord-local/nord-mem')).toBeLessThan(
-        command.indexOf('$_C/plugins/marketplaces/nord-local/plugin')
-      );
-    }
-  });
 
   it('Claude hook commands should have config-dir based non-empty fallbacks', () => {
     for (const command of commandHooksFrom('plugin/hooks/hooks.json')) {
@@ -355,7 +278,6 @@ describe('Plugin Distribution - package.json Files Field', () => {
     const packageJsonPath = path.join(projectRoot, 'package.json');
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     expect(packageJson.files).toBeDefined();
-    expect(packageJson.files).toContain('plugin/.codex-plugin');
     expect(packageJson.files).toContain('plugin/.mcp.json');
     expect(packageJson.files).toContain('plugin/hooks');
     expect(packageJson.files).toContain('plugin/skills');
@@ -455,16 +377,6 @@ const claudeHook = (tail: string[], extra: Record<string, unknown> = {}) => buil
   host: 'claude-code', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
   trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', ...extra,
 });
-const codexHook = (tail: string[]) => buildShellCommand({
-  host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-  trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
-  extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
-});
-const codexHookPair = (tail: string[]) => ({
-  command: codexHook(tail),
-  commandWindows: buildCodexWindowsCommand(tail),
-});
-
 type RuleAExpectation = string | { command: string; commandWindows: string };
 
 const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
@@ -488,13 +400,6 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
     'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
     'SessionEnd.0.0': claudeHook(['hook', 'claude-code', 'session-end']),
   },
-  'plugin/hooks/codex-hooks.json': {
-    'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
-    'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
-    'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
-    'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
-    'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
-  },
 };
 
 const MCP_EXPECTED = buildShellCommand({
@@ -503,10 +408,6 @@ const MCP_EXPECTED = buildShellCommand({
   host: 'mcp', requireFile: 'mcp-server.cjs',
   notFoundMessage: 'claude-mem: mcp server not found',
   mcpExtraCandidates: ['$PWD/plugin', '$PWD'],
-  mcpExtraCacheRoots: [
-    '$HOME/.codex/plugins/cache/claude-mem-local/claude-mem',
-    '$HOME/.codex/plugins/cache/nord-local/nord-mem',
-  ],
 });
 
 function hookEntryByPath(parsed: any, dottedPath: string): any | null {
@@ -685,38 +586,6 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
       expect(normalizeShellPath((stdout ?? '').split(':')[0])).toBe(normalizeShellPath(newestBin));
     } finally {
       rmSync(home, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('Spawn-Contract Templating - Rule B installers bake absolute paths', () => {
-  const installerFiles = [
-    'src/services/integrations/CursorHooksInstaller.ts',
-    'src/services/integrations/WindsurfHooksInstaller.ts',
-    'src/services/integrations/McpIntegrations.ts',
-    'src/services/integrations/AntigravityCliHooksInstaller.ts',
-  ];
-
-  for (const file of installerFiles) {
-    it(`${file} emits no raw \${CLAUDE_PLUGIN_ROOT} placeholder`, () => {
-      const content = readFileSync(path.join(projectRoot, file), 'utf-8');
-      expect(content).not.toMatch(/\$\{CLAUDE_PLUGIN_ROOT\}/);
-    });
-  }
-
-  it('install-paths.ts centralizes the Rule B helpers', () => {
-    const content = readFileSync(
-      path.join(projectRoot, 'src/services/integrations/install-paths.ts'),
-      'utf-8',
-    );
-    for (const name of [
-      'getMcpServerAbsolutePath',
-      'getWorkerServiceAbsolutePath',
-      'getBunAbsolutePath',
-      'getNodeAbsolutePath',
-      'getPluginRootAbsolutePath',
-    ]) {
-      expect(content).toContain(`export function ${name}`);
     }
   });
 });

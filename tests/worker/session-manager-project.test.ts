@@ -7,7 +7,6 @@ import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.
 import type { StorageResult, WorkerRef } from '../../src/services/worker/agents/types.js';
 
 mock.module('../../src/services/worker-service.js', () => ({
-  updateCursorContextForProject: () => Promise.resolve(),
 }));
 
 mock.module('../../src/shared/worker-utils.js', () => ({

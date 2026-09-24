@@ -54,7 +54,6 @@ function mockSettingsFromFile(settingsPath?: string, applyEnvOverrides = true): 
 }
 
 mock.module('../../../src/services/worker-service.js', () => ({
-  updateCursorContextForProject: () => Promise.resolve(),
 }));
 
 mock.module('../../../src/utils/claude-md-utils.js', () => ({

@@ -149,10 +149,6 @@ function shellTemplateManifest(buildShellCommand) {
         host: 'mcp', requireFile: 'mcp-server.cjs',
         notFoundMessage: 'claude-mem: mcp server not found',
         mcpExtraCandidates: ['$PWD/plugin', '$PWD'],
-        mcpExtraCacheRoots: [
-          '$HOME/.codex/plugins/cache/claude-mem-local/claude-mem',
-          '$HOME/.codex/plugins/cache/nord-local/nord-mem',
-        ],
       }),
     },
   };
@@ -548,56 +544,6 @@ async function buildHooks() {
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
 
-    if (fs.existsSync('openclaw/src/index.ts')) {
-      console.log(`\n🔧 Building OpenClaw plugin...`);
-      const openclawOutDir = 'openclaw/dist';
-      if (!fs.existsSync(openclawOutDir)) {
-        fs.mkdirSync(openclawOutDir, { recursive: true });
-      }
-      await build({
-        entryPoints: ['openclaw/src/index.ts'],
-        bundle: true,
-        platform: 'node',
-        target: 'node18',
-        format: 'esm',
-        outfile: `${openclawOutDir}/index.js`,
-        minify: true,
-        logLevel: 'error',
-        external: [
-          'fs', 'fs/promises', 'path', 'os', 'child_process', 'url',
-          'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
-        ],
-      });
-
-      const openclawStats = fs.statSync(`${openclawOutDir}/index.js`);
-      console.log(`✓ openclaw plugin built (${(openclawStats.size / 1024).toFixed(2)} KB)`);
-    }
-
-    if (fs.existsSync('src/integrations/opencode-plugin/index.ts')) {
-      console.log(`\n🔧 Building OpenCode plugin...`);
-      const opencodeOutDir = 'dist/opencode-plugin';
-      if (!fs.existsSync(opencodeOutDir)) {
-        fs.mkdirSync(opencodeOutDir, { recursive: true });
-      }
-      await build({
-        entryPoints: ['src/integrations/opencode-plugin/index.ts'],
-        bundle: true,
-        platform: 'node',
-        target: 'node18',
-        format: 'esm',
-        outfile: `${opencodeOutDir}/index.js`,
-        minify: true,
-        logLevel: 'error',
-        external: [
-          'fs', 'fs/promises', 'path', 'os', 'child_process', 'url',
-          'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
-        ],
-      });
-
-      const opencodeStats = fs.statSync(`${opencodeOutDir}/index.js`);
-      console.log(`✓ opencode plugin built (${(opencodeStats.size / 1024).toFixed(2)} KB)`);
-    }
-
     console.log('\n📋 Verifying distribution files...');
     const requiredDistributionFiles = [
       'plugin/hooks/hooks.json',
@@ -606,7 +552,6 @@ async function buildHooks() {
       'plugin/sqlite/observations/files.js',
       'plugin/.claude-plugin/plugin.json',
       'plugin/.mcp.json',
-      '.agents/plugins/marketplace.json',
       // 'dist/bug-report/index.js' — bei upstream unerfuellbar und hier
       // gegenstandslos: tsconfig.json schliesst nur src/**/* ein, scripts/bug-report
       // liegt ausserhalb, und es gibt keinen zweiten tsconfig. Kein Schritt in
@@ -618,16 +563,8 @@ async function buildHooks() {
         throw new Error(`Missing required distribution file: ${filePath}`);
       }
     }
-    const codexMarketplace = JSON.parse(fs.readFileSync('.agents/plugins/marketplace.json', 'utf-8'));
-    const claudeMemMarketplaceEntry = (codexMarketplace.plugins ?? []).find((plugin) => plugin.name === 'claude-mem');
-    if (claudeMemMarketplaceEntry?.source?.path !== './plugin') {
-      throw new Error('.agents/plugins/marketplace.json must point claude-mem source.path at ./plugin so Codex loads the bundled plugin root');
-    }
     const bundledMcp = JSON.parse(fs.readFileSync('plugin/.mcp.json', 'utf-8'));
     const mcpSearchCommand = bundledMcp.mcpServers?.['mcp-search']?.args?.join(' ') ?? '';
-    if (!mcpSearchCommand.includes('.codex/plugins/cache/claude-mem-local/claude-mem')) {
-      throw new Error('plugin/.mcp.json mcp-search launcher must include Codex cache fallback for hosts that do not inject PLUGIN_ROOT');
-    }
     if (!mcpSearchCommand.includes('plugins/cache/nord-local/nord-mem')) {
       throw new Error('plugin/.mcp.json mcp-search launcher must include Claude cache fallback for hosts that do not inject PLUGIN_ROOT');
     }
@@ -640,14 +577,6 @@ async function buildHooks() {
     console.log(`   - Worker: worker-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log(`   - Context Generator: context-generator.cjs`);
-    if (fs.existsSync('openclaw/dist/index.js')) {
-      console.log(`   Output: openclaw/dist/`);
-      console.log(`   - OpenClaw Plugin: index.js`);
-    }
-    if (fs.existsSync('dist/opencode-plugin/index.js')) {
-      console.log(`   Output: dist/opencode-plugin/`);
-      console.log(`   - OpenCode Plugin: index.js`);
-    }
 
   } catch (error) {
     console.error('\n❌ Build failed:', error.message);

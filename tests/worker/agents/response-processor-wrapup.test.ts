@@ -20,7 +20,6 @@ const deliverSessionWrapup = mock(async () => 'sent' as const);
 
 mock.module('../../../src/services/worker-service.js', () => ({
   ...realWorkerServiceSnapshot,
-  updateCursorContextForProject: () => Promise.resolve(),
 }));
 
 mock.module('../../../src/shared/worker-utils.js', () => ({
