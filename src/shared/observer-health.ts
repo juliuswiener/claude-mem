@@ -409,8 +409,9 @@ export function renderObserverQuotaCooldownNotice(
     'when the cooldown clears — the worker is intentionally not starting the',
     'generator so it does not keep spending a spent allowance.',
     '',
-    'Restarting will NOT help here, and it clears the backoff that is currently keeping',
-    'claude-mem from hammering the provider — so please leave the worker alone.',
+    'Restarting will NOT help here: the cooldown survives a restart (it is kept on disk),',
+    'and a restart discards the observations still queued in memory — so please leave',
+    'the worker alone.',
     '',
     '(Assistant: tell the user that memory capture is paused for a quota cooldown',
     'at the very start of your first reply. Do NOT restart the worker and do NOT',
@@ -427,12 +428,11 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
   const count = state.consecutiveFailures;
   const action = state.lastErrorAction ? scrubErrorMessage(state.lastErrorAction) : null;
 
-  // A spent allowance is the one outage a restart cannot clear. Worse, the
-  // restart link is the code path that clears the quota breaker (the process
-  // serving /api/admin/restart is the process holding the cooldown), so
-  // offering it here talks the user into re-opening the per-observation
-  // request storm the breaker exists to stop. Nothing is wedged; the account
-  // is out of allowance. Say that, and relay the provider's own remedy.
+  // A spent allowance is the one outage a restart cannot clear. Worse, a
+  // restart throws away the observations queued in memory while the allowance
+  // is out, and the cooldown itself survives it on disk, so offering one here
+  // costs the backlog and buys nothing. Nothing is wedged; the account is out
+  // of allowance. Say that, and relay the provider's own remedy.
   if (isQuotaFailure(state)) {
     return [
       "⚠️ Heads up: claude-mem can't save memories right now.",
@@ -447,10 +447,12 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
       "Until the allowance resets or you add capacity, nothing from this session — or any",
       'other — will be remembered.',
       '',
-      // Deliberately no restart link: nothing is broken to restart, and doing
-      // it disarms the breaker that is currently protecting the account.
-      'Restarting will NOT help here, and it clears the backoff that is currently keeping',
-      'claude-mem from hammering the provider — so please leave the worker alone.',
+      // Deliberately no restart link: nothing is broken to restart, the breaker
+      // lives in quota-cooldown.json and survives it, and the restart drops the
+      // in-memory queue (der-rueckstau-bleibt-fluechtig-aber-die-meldung-sagt-es).
+      'Restarting will NOT help here: the cooldown survives a restart (it is kept on disk),',
+      'and a restart discards the observations still queued in memory — so please leave',
+      'the worker alone.',
       ...(action ? [] : [
         'Switch the observer to another provider in ~/.claude-mem/settings.json if you need',
         'memory capture before the allowance resets.',

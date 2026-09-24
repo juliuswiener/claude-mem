@@ -431,6 +431,44 @@ describe('renderObserverQuotaCooldownNotice', () => {
   });
 });
 
+// Vault: der-rueckstau-bleibt-fluechtig-aber-die-meldung-sagt-es. Beide Texte
+// nannten als Grund gegen den Neustart ein geloeschtes Backoff. Die Sperre liegt
+// aber auf der Platte und ueberlebt ihn (Test darunter); was er wirklich
+// verwirft, ist die Schlange im Arbeitsspeicher.
+describe('der Grund gegen den Neustart ist der wahre', () => {
+  const quotaNotice = () => renderObserverQuotaCooldownNotice(unhealthyState({
+    consecutiveFailures: 0,
+    quotaCooldown: activeCooldown(),
+  }), 1_754_700_000_000 + 60_000);
+  const quotaWarning = () => renderObserverHealthWarning(unhealthyState({
+    lastErrorKind: 'quota_exhausted',
+  }));
+
+  for (const [name, render] of [['Sperr-Hinweis', quotaNotice], ['Kontingent-Warnung', quotaWarning]] as const) {
+    it(`${name}: behauptet kein geloeschtes Backoff`, () => {
+      expect(render()).not.toContain('clears the backoff');
+    });
+    it(`${name}: nennt die verworfene Schlange`, () => {
+      expect(render()).toContain('discards the observations still queued in memory');
+    });
+    it(`${name}: sagt, dass die Sperre den Neustart ueberlebt`, () => {
+      expect(render()).toContain('the cooldown survives a restart');
+    });
+  }
+
+  it('die Sperre ueberlebt tatsaechlich einen neuen Prozess', () => {
+    const run = (code: string) => Bun.spawnSync(['bun', '-e', code], {
+      cwd: repoRoot,
+      env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir },
+    });
+    const mod = JSON.stringify(join(repoRoot, 'src/shared/quota-cooldown.ts'));
+    const arm = run(`const q = await import(${mod}); q.recordQuotaExhausted('claude', 'x', 'five_hour');`);
+    expect(arm.exitCode).toBe(0);
+    const check = run(`const q = await import(${mod}); process.exit(q.isQuotaCooldownActive('claude') ? 0 : 7);`);
+    expect(check.exitCode).toBe(0);
+  });
+});
+
 describe('describeDuration', () => {
   it('renders minutes, hours, and days at human granularity', () => {
     expect(describeDuration(30_000)).toBe('1 minute');

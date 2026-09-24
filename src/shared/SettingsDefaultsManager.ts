@@ -294,6 +294,10 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CCS_ALIGN_TRIGGER_TYPES: 'decision,bugfix,security_alert,sensitive',
     // Phase 2 rules-shadow patch stays a Prioritizer flag, not a silent /do (D8).
     CLAUDE_MEM_CCS_ALIGN_PATCH_SHADOWS: 'false',
+    // Only ever compared against 'bullmq'. 'sqlite' means "not bullmq" and writes
+    // nothing to disk: the pending queue lives in SessionManager's memory, and
+    // upstream edc5cf7d dropped the last pending_messages INSERT. A restart
+    // discards it (der-rueckstau-bleibt-fluechtig-aber-die-meldung-sagt-es).
     CLAUDE_MEM_QUEUE_ENGINE: 'sqlite',
     CLAUDE_MEM_REDIS_URL: '',
     CLAUDE_MEM_REDIS_HOST: '127.0.0.1',
