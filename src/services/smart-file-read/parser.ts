@@ -1,7 +1,7 @@
 
 import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, statSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, statSync, accessSync, constants as fsConstants } from "node:fs";
+import { join, dirname, delimiter } from "node:path";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { logger } from "../../utils/logger.js";
@@ -372,6 +372,31 @@ export function resolveTreeSitterBinPath(platform: NodeJS.Platform = process.pla
   }
 
   return binName;
+}
+
+// AK3 (fehlendes-tree-sitter-binary-wird-beim-setup-nachgeholt): a
+// --ignore-scripts install leaves tree-sitter-cli's package.json and cli.js in
+// place but skips the postinstall download that produces the actual
+// `tree-sitter` binary, so resolveTreeSitterBinPath falls back to a bare name
+// that is not on PATH. execFileSync then fails on every call (caught and
+// logged at debug in execQuery below), and parseFile silently returns 0
+// symbols — indistinguishable from a genuinely unsupported language. Callers
+// (mcp-server.ts's smart_outline / smart_search / smart_unfold handlers) use
+// this to tell the two apart before choosing their error message.
+export function isTreeSitterBinExecutable(binPath: string = resolveTreeSitterBinPath()): boolean {
+  // A bare name is the PATH fallback, so it is looked up the way execFileSync
+  // will: in each PATH entry, not relative to the cwd.
+  const candidates = binPath.includes("/") || binPath.includes("\\")
+    ? [binPath]
+    : (process.env.PATH ?? "").split(delimiter).filter(Boolean).map((dir) => join(dir, binPath));
+  return candidates.some((candidate) => {
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 let cachedBinPath: string | null = null;

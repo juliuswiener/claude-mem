@@ -21,6 +21,11 @@ const ZOD_REQUIRED_SUBPATHS = Object.freeze(['zod/v3', 'zod/v4', 'zod/v4-mini'])
 // A fresh extract can have all ~26 declared deps missing at once; cap the
 // diagnostic so the Setup transcript stays readable.
 const MISSING_DEPS_LOG_LIMIT = 5;
+const TREE_SITTER_CLI_DIRNAME = 'tree-sitter-cli';
+const TREE_SITTER_BIN_NAME = IS_WINDOWS ? 'tree-sitter.exe' : 'tree-sitter';
+// A single binary download, not a ~26-package fetch: shorter than
+// BUN_INSTALL_TIMEOUT_MS is enough headroom without blocking Setup as long.
+const TREE_SITTER_INSTALL_TIMEOUT_MS = 60_000;
 
 function findBun() {
   const pathCheck = IS_WINDOWS
@@ -289,6 +294,69 @@ function ensurePluginDependencies(pluginRoot) {
   }
 }
 
+// tree-sitter-cli ships its actual `tree-sitter` binary via a postinstall
+// download in install.js. The plugin marketplace's --ignore-scripts install
+// (check-postinstall-allowlist.js:8-13, added after a postinstall download
+// hung `npx claude-mem install` in v12.6.1) skips that download on purpose,
+// so a normal install leaves cli.js and install.js in place but no binary.
+// parser.ts's resolveTreeSitterBinPath then falls back to a bare
+// `tree-sitter` that is not on PATH, and smart_outline / smart_search /
+// smart_unfold silently report every language as unsupported
+// (vault: fehlendes-tree-sitter-binary-wird-beim-setup-nachgeholt).
+//
+// The repair is intentionally narrow: run ONLY tree-sitter-cli's own
+// install.js, inside its own package directory. This keeps upstream's
+// --ignore-scripts intent for the rest of the tree — no other package's
+// postinstall gets a chance to run — while still materializing the one
+// binary the three MCP tools cannot function without.
+function ensureTreeSitterBinary(pluginRoot) {
+  const pkgDir = join(pluginRoot, NODE_MODULES_DIRNAME, TREE_SITTER_CLI_DIRNAME);
+  if (!existsSync(join(pkgDir, 'package.json'))) return; // tree-sitter-cli not installed; nothing to repair
+  if (existsSync(join(pkgDir, TREE_SITTER_BIN_NAME))) return; // already present
+
+  console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli binary missing; running install.js...`);
+
+  let result;
+  try {
+    result = spawnSync(process.execPath, ['install.js'], {
+      cwd: pkgDir,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: TREE_SITTER_INSTALL_TIMEOUT_MS,
+      windowsHide: true,
+    });
+  } catch (err) {
+    const reason = err && err.message ? err.message : String(err);
+    console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli install.js threw (${reason}); smart_outline/smart_search/smart_unfold will report every language as unsupported`);
+    return;
+  }
+
+  // Same three-way spawnSync failure contract as ensurePluginDependencies
+  // above: no throw on a failed child, so error / non-zero exit / signal-kill
+  // (e.g. hitting the timeout) all need explicit handling. Setup must exit 0
+  // either way — this is a repair attempt, not a requirement.
+  const killedBySignal = result.status === null && !!result.signal;
+  const nonZeroExit = result.status !== null && result.status !== 0;
+  if (result.error || nonZeroExit || killedBySignal) {
+    let reason;
+    if (result.error) {
+      reason = result.error.message;
+    } else if (killedBySignal) {
+      reason = `killed by ${result.signal}`;
+    } else {
+      reason = `exit ${result.status}`;
+    }
+    console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli install.js failed (${reason}); smart_outline/smart_search/smart_unfold will report every language as unsupported`);
+    return;
+  }
+
+  if (existsSync(join(pkgDir, TREE_SITTER_BIN_NAME))) {
+    console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter binary installed successfully`);
+  } else {
+    console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli install.js exited 0 but the binary is still missing; smart_outline/smart_search/smart_unfold will report every language as unsupported`);
+  }
+}
+
 function resolveRoot() {
   if (process.env.CLAUDE_PLUGIN_ROOT) {
     const root = process.env.CLAUDE_PLUGIN_ROOT;
@@ -306,6 +374,7 @@ const ROOT = resolveRoot();
 if (!ROOT) process.exit(0);
 
 ensurePluginDependencies(ROOT);
+ensureTreeSitterBinary(ROOT);
 
 function emitUpgradeHint(message) {
   if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') {

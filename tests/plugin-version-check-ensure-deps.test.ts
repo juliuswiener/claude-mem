@@ -133,6 +133,27 @@ function writeFakeBinOnlyPackage(pluginRoot: string, name: string, binName: stri
 }
 
 /**
+ * Write a tree-sitter-cli-shaped package with NO `tree-sitter` binary — the
+ * exact tree `--ignore-scripts` leaves behind (check-postinstall-allowlist.js:
+ * 8-13): package.json and cli.js are present, install.js is present but never
+ * ran. `install.js` is replaced with `installScriptBody` so a test controls
+ * what "running install.js" does, without spawning the real network download.
+ * Returns the package directory so tests can assert on the binary it should
+ * (or should not) materialize there.
+ */
+function writeFakeTreeSitterCli(pluginRoot: string, installScriptBody: string): string {
+  const pkgDir = join(pluginRoot, 'node_modules', 'tree-sitter-cli');
+  mkdirSync(pkgDir, { recursive: true });
+  writeFileSync(
+    join(pkgDir, 'package.json'),
+    JSON.stringify({ name: 'tree-sitter-cli', version: '0.0.0', bin: { 'tree-sitter': './cli.js' } }),
+  );
+  writeFileSync(join(pkgDir, 'cli.js'), '#!/usr/bin/env node\n');
+  writeFileSync(join(pkgDir, 'install.js'), installScriptBody);
+  return pkgDir;
+}
+
+/**
  * Resolve a specifier the same way version-check's findMissingDependencies does:
  * a require anchored inside the install tree, with the tree as the sole resolve
  * path, so the installed `exports` map governs subpath resolution. Lets a test
@@ -497,5 +518,43 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
     // And the repair must have populated the plugin's OWN tree.
     expect(existsSync(join(pluginRoot, 'node_modules', 'zod', 'package.json'))).toBe(true);
+  });
+});
+
+describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensureTreeSitterBinary (fehlendes-tree-sitter-binary-wird-beim-setup-nachgeholt)', () => {
+  test('AK1: runs tree-sitter-cli/install.js when the package is present without a binary', async () => {
+    // The exact shape the plugin's --ignore-scripts install leaves behind
+    // (check-postinstall-allowlist.js:8-13): cli.js and install.js exist, the
+    // binary install.js's own postinstall would have fetched does not. Setup
+    // must run ONLY install.js, inside tree-sitter-cli's own package dir —
+    // not a general `bun install` with scripts re-enabled.
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-tree-sitter-missing-bin');
+    writeFakePackage(pluginRoot, 'zod', ZOD_COMPLETE_EXPORTS);
+    const pkgDir = writeFakeTreeSitterCli(
+      pluginRoot,
+      "require('fs').writeFileSync(require('path').join(__dirname, 'tree-sitter'), '');\n",
+    );
+
+    const { code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(existsSync(join(pkgDir, 'tree-sitter'))).toBe(true);
+  });
+
+  test('AK2: does not fail Setup when install.js exits non-zero, and names the reason on stderr', async () => {
+    // parser.ts's resolveTreeSitterBinPath falls back to a bare `tree-sitter`
+    // when the binary is missing — an install.js failure (offline, broken
+    // download) must leave Setup exiting 0 with a named reason, not crash the
+    // hot path Setup runs on every Claude Code launch.
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-tree-sitter-install-fails');
+    writeFakePackage(pluginRoot, 'zod', ZOD_COMPLETE_EXPORTS);
+    const pkgDir = writeFakeTreeSitterCli(pluginRoot, 'process.exit(1);\n');
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(existsSync(join(pkgDir, 'tree-sitter'))).toBe(false);
+    expect(stderr).toContain('tree-sitter-cli');
+    expect(stderr).toContain('exit 1');
   });
 });

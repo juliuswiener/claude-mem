@@ -17,7 +17,7 @@ import {
 import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
-import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
+import { parseFile, formatFoldedView, unfoldSymbol, isTreeSitterBinExecutable, resolveTreeSitterBinPath } from '../services/smart-file-read/parser.js';
 import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -440,6 +440,19 @@ async function ensureWorkerConnection(): Promise<boolean> {
   }
 }
 
+// AK3 (fehlendes-tree-sitter-binary-wird-beim-setup-nachgeholt): a --ignore-scripts
+// plugin install can leave tree-sitter-cli without its actual `tree-sitter` binary
+// (check-postinstall-allowlist.js:8-13), so parseFile / searchCodebase silently
+// return 0 symbols for EVERY language — indistinguishable from a genuinely
+// unsupported one. Naming the missing binary and the fix here saves an agent from
+// concluding the source file itself is unreadable. Returns null when the binary
+// is fine, so callers fall back to their normal "unsupported language" message.
+function missingTreeSitterBinMessage(): string | null {
+  const binPath = resolveTreeSitterBinPath();
+  if (isTreeSitterBinExecutable(binPath)) return null;
+  return `tree-sitter binary not found at ${binPath} — restart Claude Code to let Setup reinstall it, or run 'node install.js' in that package's directory.`;
+}
+
 const tools = [
   {
     name: 'important_workflow',
@@ -723,6 +736,10 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['query']
     },
     handler: async (args: any) => {
+      const missingBinMessage = missingTreeSitterBinMessage();
+      if (missingBinMessage) {
+        return { content: [{ type: 'text' as const, text: missingBinMessage }] };
+      }
       const rootDir = await resolveWithinWorkspace(args.path || process.cwd());
       const result = await searchCodebase(rootDir, args.query, {
         maxResults: args.max_results || 20,
@@ -770,10 +787,11 @@ NEVER fetch full details without filtering first. 10x token savings.`,
           }]
         };
       }
+      const missingBinMessage = missingTreeSitterBinMessage();
       return {
         content: [{
           type: 'text' as const,
-          text: `Could not parse ${args.file_path}. File may be unsupported or empty.`
+          text: missingBinMessage ?? `Could not parse ${args.file_path}. File may be unsupported or empty.`
         }]
       };
     }
@@ -800,10 +818,11 @@ NEVER fetch full details without filtering first. 10x token savings.`,
           content: [{ type: 'text' as const, text: formatFoldedView(parsed) }]
         };
       }
+      const missingBinMessage = missingTreeSitterBinMessage();
       return {
         content: [{
           type: 'text' as const,
-          text: `Could not parse ${args.file_path}. File may use an unsupported language or be empty.`
+          text: missingBinMessage ?? `Could not parse ${args.file_path}. File may use an unsupported language or be empty.`
         }]
       };
     }
