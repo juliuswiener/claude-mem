@@ -5,8 +5,9 @@ import { ChromaSync } from '../sync/ChromaSync.js';
 import { FormattingService } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
-import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
+import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult, DateRange } from '../sqlite/types.js';
 import { logger } from '../../utils/logger.js';
+import { AppError } from '../server/ErrorHandler.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
@@ -95,9 +96,9 @@ export class SearchManager {
   }
 
   /**
-   * Shared "Chroma semantic match -> 90-day recency filter -> SQLite hydrate"
+   * Shared "Chroma semantic match -> date-window filter -> SQLite hydrate"
    * pipeline for the single-doc-type hybrid searches. Returns the hydrated rows
-   * (empty when Chroma yields nothing recent); callers own their own FTS
+   * (empty when Chroma yields nothing in range); callers own their own FTS
    * fallback and formatting so per-caller behavior is preserved exactly.
    */
   private async hybridSemanticHydrate<T>(
@@ -105,20 +106,44 @@ export class SearchManager {
     docType: string,
     project: string | undefined,
     platformSource: string | undefined,
-    hydrate: (ids: number[]) => T[]
+    hydrate: (ids: number[]) => T[],
+    dateRange?: DateRange
   ): Promise<T[]> {
     const whereFilter = this.buildDocTypeWhereFilter(docType, project, platformSource);
     const chromaResults = await this.queryChroma(query, 100, whereFilter);
     logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults?.ids?.length ?? 0 });
 
     if (chromaResults?.ids && chromaResults.ids.length > 0) {
-      const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
-      const recentIds = chromaResults.ids.filter((_id, idx) => {
-        const meta = chromaResults.metadatas[idx];
-        return meta && meta.created_at_epoch > ninetyDaysAgo;
-      });
+      let recentIds: number[];
 
-      logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
+      if (dateRange) {
+        // Mirrors performChromaSemanticSearch's date-window handling
+        // (SearchManager.ts:~384-411): a caller-supplied dateRange replaces
+        // the default recency window instead of stacking on top of it.
+        let startEpoch: number | undefined;
+        let endEpoch: number | undefined;
+        if (dateRange.start) {
+          startEpoch = typeof dateRange.start === 'number' ? dateRange.start : new Date(dateRange.start).getTime();
+        }
+        if (dateRange.end) {
+          endEpoch = typeof dateRange.end === 'number' ? dateRange.end : new Date(dateRange.end).getTime();
+        }
+
+        recentIds = chromaResults.ids.filter((_id, idx) => {
+          const meta = chromaResults.metadatas[idx];
+          return meta && meta.created_at_epoch != null
+            && (!startEpoch || meta.created_at_epoch >= startEpoch)
+            && (!endEpoch || meta.created_at_epoch <= endEpoch);
+        });
+        logger.debug('SEARCH', 'Results within user date range', { count: recentIds.length });
+      } else {
+        const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+        recentIds = chromaResults.ids.filter((_id, idx) => {
+          const meta = chromaResults.metadatas[idx];
+          return meta && meta.created_at_epoch > ninetyDaysAgo;
+        });
+        logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
+      }
 
       if (recentIds.length > 0) {
         return hydrate(recentIds);
@@ -127,9 +152,10 @@ export class SearchManager {
     return [];
   }
 
-  private async searchChromaForTimeline(query: string, project?: string, platformSource?: string): Promise<ObservationSearchResult[]> {
+  private async searchChromaForTimeline(query: string, project?: string, platformSource?: string, dateRange?: DateRange): Promise<ObservationSearchResult[]> {
     return this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids) =>
-      this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit: 1, project, platformSource })
+      this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit: 1, project, platformSource }),
+      dateRange
     );
   }
 
@@ -245,6 +271,29 @@ export class SearchManager {
     return lines;
   }
 
+  /**
+   * Normalize a dateStart/dateEnd boundary so every dateRange consumer's
+   * `typeof x === 'number' ? x : new Date(x).getTime()` check (SessionSearch,
+   * ChromaSearchStrategy, hybridSemanticHydrate, performChromaSemanticSearch)
+   * can actually parse it. A digit string (epoch ms, e.g. "1754524800000")
+   * fails `new Date()` — it needs `Number()` first — so it is converted here;
+   * an ISO date string passes through unchanged. Anything neither parses is
+   * rejected with 400 instead of being silently dropped by every consumer.
+   */
+  private parseDateBoundary(value: unknown, paramName: string): string | number {
+    if (typeof value === 'number') {
+      return value;
+    }
+    const str = String(value).trim();
+    if (/^\d+$/.test(str)) {
+      return Number(str);
+    }
+    if (Number.isNaN(new Date(str).getTime())) {
+      throw new AppError(`Invalid ${paramName}: "${value}"`, 400);
+    }
+    return value as string;
+  }
+
   private normalizeParams(args: any): any {
     const normalized: any = { ...args };
 
@@ -278,8 +327,8 @@ export class SearchManager {
     const dateEnd = normalized.dateEnd ?? normalized.date_end ?? normalized.date_to;
     if (dateStart || dateEnd) {
       normalized.dateRange = {
-        start: dateStart,
-        end: dateEnd
+        start: dateStart ? this.parseDateBoundary(dateStart, 'dateStart') : undefined,
+        end: dateEnd ? this.parseDateBoundary(dateEnd, 'dateEnd') : undefined
       };
     }
     delete normalized.dateStart;
@@ -745,7 +794,7 @@ export class SearchManager {
 
   async timeline(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
-    const { anchor, query, depth_before, depth_after, project, platformSource } = normalized;
+    const { anchor, query, depth_before, depth_after, project, platformSource, dateRange } = normalized;
     const depthBefore = depth_before != null ? Number(depth_before) : 10;
     const depthAfter = depth_after != null ? Number(depth_after) : 10;
     const anchorAsNumber = this.parseNumericAnchor(anchor);
@@ -781,7 +830,7 @@ export class SearchManager {
       if (this.chromaSync) {
         logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
         try {
-          results = await this.searchChromaForTimeline(query, project, platformSource);
+          results = await this.searchChromaForTimeline(query, project, platformSource, dateRange);
         } catch (chromaError) {
           const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
           logger.error('WORKER', 'Chroma search failed for timeline, continuing without semantic results', {}, errorObject);
@@ -924,7 +973,8 @@ export class SearchManager {
       try {
         const limit = options.limit || 20;
         results = await this.hybridSemanticHydrate(query, 'observation', options.project, options.platformSource, (ids) =>
-          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project: options.project, platformSource: options.platformSource })
+          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project: options.project, platformSource: options.platformSource }),
+          options.dateRange
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
@@ -1091,7 +1141,7 @@ export class SearchManager {
 
   async getTimelineByQuery(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
-    const { query, mode = 'auto', limit = 5, project, platformSource } = normalized;
+    const { query, mode = 'auto', limit = 5, project, platformSource, dateRange } = normalized;
 
     if (mode !== 'interactive') {
       return this.timeline(args);
@@ -1103,7 +1153,8 @@ export class SearchManager {
       logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
       try {
         results = await this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids) =>
-          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project, platformSource })
+          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project, platformSource }),
+          dateRange
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));

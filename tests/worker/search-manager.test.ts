@@ -163,6 +163,94 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
     );
   });
 
+  it('excludes Chroma observation matches newer than dateEnd across searchObservations, getTimelineByQuery, and timeline (AK1, AK2)', async () => {
+    // Chroma returns two candidates; only the one dated before dateEnd should
+    // reach hydration. performChromaSemanticSearch (search()'s own path)
+    // already applies this window at SearchManager.ts:384-411 — these three
+    // callers share hybridSemanticHydrate/searchChromaForTimeline instead and
+    // dropped it silently (live: /api/search/observations?dateEnd=2026-09-20
+    // returned #28292 from 2026-09-24).
+    const inRangeId = 61;
+    const tooNewId = 62;
+    const dateEnd = '2026-09-20';
+    const dateEndEpoch = new Date(dateEnd).getTime();
+
+    const makeManager = (getObservationsByIds: any) => new SearchManager(
+      {
+        searchObservations: mock(() => []),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds,
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+      } as any,
+      {
+        queryChroma: mock(() => Promise.resolve({
+          ids: [inRangeId, tooNewId],
+          distances: [0.05, 0.1],
+          metadatas: [
+            { sqlite_id: inRangeId, doc_type: 'observation', created_at_epoch: dateEndEpoch - 86_400_000 },
+            { sqlite_id: tooNewId, doc_type: 'observation', created_at_epoch: dateEndEpoch + 4 * 86_400_000 },
+          ],
+        })),
+      } as any,
+      {} as any,
+      {} as any,
+    );
+
+    const searchHydrate = mock(() => []);
+    await makeManager(searchHydrate).searchObservations({ query: 'writeMu', dateEnd, limit: 5 });
+    expect(searchHydrate).toHaveBeenCalledWith([inRangeId], expect.objectContaining({ orderBy: 'relevance' }));
+
+    const timelineHydrate = mock(() => []);
+    await makeManager(timelineHydrate).getTimelineByQuery({ query: 'writeMu', dateEnd, mode: 'interactive', limit: 5 });
+    expect(timelineHydrate).toHaveBeenCalledWith([inRangeId], expect.objectContaining({ orderBy: 'relevance' }));
+
+    const anchorHydrate = mock(() => []);
+    await makeManager(anchorHydrate).timeline({ query: 'writeMu', dateEnd });
+    expect(anchorHydrate).toHaveBeenCalledWith([inRangeId], expect.objectContaining({ orderBy: 'relevance' }));
+  });
+
+  it('accepts dateEnd as an epoch-ms digit string, matching the equivalent ISO date (AK3)', async () => {
+    // `new Date("1758326400000")` is NaN — Date's string parser does not
+    // accept a bare digit string, unlike a real ISO date. Without special
+    // casing, the bound below would parse to NaN and get silently dropped.
+    const inRangeId = 71;
+    const tooNewId = 72;
+    const dateEndEpoch = new Date('2026-09-20').getTime();
+
+    const getObservationsByIds = mock(() => []);
+    const manager = new SearchManager(
+      {
+        searchObservations: mock(() => []),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds,
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+      } as any,
+      {
+        queryChroma: mock(() => Promise.resolve({
+          ids: [inRangeId, tooNewId],
+          distances: [0.05, 0.1],
+          metadatas: [
+            { sqlite_id: inRangeId, doc_type: 'observation', created_at_epoch: dateEndEpoch - 86_400_000 },
+            { sqlite_id: tooNewId, doc_type: 'observation', created_at_epoch: dateEndEpoch + 86_400_000 },
+          ],
+        })),
+      } as any,
+      {} as any,
+      {} as any,
+    );
+
+    await manager.searchObservations({ query: 'writeMu', dateEnd: String(dateEndEpoch), limit: 5 });
+    expect(getObservationsByIds).toHaveBeenCalledWith([inRangeId], expect.objectContaining({ orderBy: 'relevance' }));
+  });
+
   it('passes platformSource into Chroma session where filter and SQLite hydration', async () => {
     const session = {
       id: 6,
