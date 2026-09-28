@@ -123,6 +123,21 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     store = freshStore();
   });
 
+  // 2026-09-28: a worker that ran across the weekly reset kept the 93% seven_day
+  // snapshot from before it and aborted on it the next morning, at 2% real usage.
+  it('ignores a snapshot whose window has already reset', () => {
+    store.set({ rateLimitType: 'seven_day', utilization: 0.93, status: 'allowed_warning', resetsAt: FIXED_NOW - 60_000 });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
+    store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt: FIXED_NOW - 60_000 });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
+    // resetsAt as epoch seconds, the shape Claude Code has been seen writing
+    store.set({ rateLimitType: 'seven_day', utilization: 0.93, resetsAt: Math.floor((FIXED_NOW - 60_000) / 1000) });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
+    // still before the reset: the guard holds
+    store.set({ rateLimitType: 'seven_day', utilization: 0.93, resetsAt: FIXED_NOW + 60_000 });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(true);
+  });
+
   it('does not abort on inactive overage at 100% utilization', () => {
     store.set({
       rateLimitType: 'overage',

@@ -219,6 +219,14 @@ export function shouldAbortForQuota(
     const entry = store.get(window);
     if (!entry) continue;
 
+    // A snapshot only speaks for its own window. The store lives as long as the
+    // worker, and a worker whose observer is paused sees no new rate-limit event,
+    // so after a reset the old snapshot would keep aborting on usage that no
+    // longer exists (2026-09-28: 93% seven_day from before the weekly reset,
+    // real usage 2%). The next SDK event replaces it with the live value.
+    const resetsAtMs = epochToMs(entry.resetsAt);
+    if (resetsAtMs !== undefined && resetsAtMs <= now) continue;
+
     const util = entry.utilization;
     const threshold = UTILIZATION_THRESHOLDS[window];
     // An explicit false means the provider is not charging the overage bucket,
