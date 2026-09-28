@@ -297,7 +297,17 @@ export function fitContextForDelivery(
 
 export async function generateContextWithStats(
   input?: ContextInput,
-  forHuman: boolean = false
+  forHuman: boolean = false,
+  /**
+   * False for the observer's own SessionStart briefing
+   * (recycle-conversation.ts's loadSessionStartContext): the observer's
+   * health/cooldown warning is written for a human or the calling agent, and
+   * feeding it back to the observer as context made it answer with outage
+   * prose instead of observations (eigene-bremse-ist-eine-pause-kein-ausfall).
+   * The human/agent SessionStart path (SearchRoutes) always passes the
+   * default true.
+   */
+  includeHealthWarning: boolean = true
 ): Promise<{ text: string; stats: ContextInjectStats | null }> {
   const config = loadContextConfig();
   const cwd = input?.cwd ?? process.cwd();
@@ -311,9 +321,13 @@ export async function generateContextWithStats(
     config.sessionCount = 999999;
   }
 
+  // Read once so every branch below — including the two early returns — sees
+  // the same value; suppressed entirely for the observer's own briefing.
+  const healthWarning = includeHealthWarning ? observerHealthWarning(forHuman) : '';
+
   const rawDb = initializeDatabase();
   if (!rawDb) {
-    return { text: withObserverHealthWarning('', forHuman), stats: null };
+    return { text: appendObserverHealthWarning(healthWarning, ''), stats: null };
   }
 
   try {
@@ -326,7 +340,7 @@ export async function generateContextWithStats(
     const summaries = querySummariesMulti(db, queryProjects, config, platformSource);
 
     if (observations.length === 0 && summaries.length === 0) {
-      return { text: withObserverHealthWarning(renderEmptyState(project, forHuman), forHuman), stats: null };
+      return { text: appendObserverHealthWarning(healthWarning, renderEmptyState(project, forHuman)), stats: null };
     }
 
     // `--full` is an explicit human request for everything; only the block that
@@ -335,7 +349,7 @@ export async function generateContextWithStats(
       observations,
       summaries,
       config,
-      observerHealthWarning(forHuman),
+      healthWarning,
       (items, cfg) =>
         buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, forHuman),
       input?.full ? Number.POSITIVE_INFINITY : CONTEXT_OUTPUT_LIMIT,
@@ -348,7 +362,8 @@ export async function generateContextWithStats(
 
 export async function generateContext(
   input?: ContextInput,
-  forHuman: boolean = false
+  forHuman: boolean = false,
+  includeHealthWarning: boolean = true
 ): Promise<string> {
-  return (await generateContextWithStats(input, forHuman)).text;
+  return (await generateContextWithStats(input, forHuman, includeHealthWarning)).text;
 }

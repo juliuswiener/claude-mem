@@ -195,7 +195,7 @@ describe('SearchRoutes Welcome Hint', () => {
 
     expect(res.send).toHaveBeenCalledTimes(1);
     const body = (res.send as any).mock.calls[0][0] as string;
-    expect(body).toContain('paused while a provider quota cooldown is active');
+    expect(body).toContain('paused while a quota cooldown is active');
     expect(body).toContain('This is not a failure');
     expect(body).toContain('# claude-mem status');
     expect(body).not.toContain("can't save memories");

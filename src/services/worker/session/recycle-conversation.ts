@@ -42,12 +42,18 @@ export async function loadSessionStartContext(
   cwd?: string,
 ): Promise<string> {
   try {
+    // includeHealthWarning=false: this briefs the OBSERVER itself, and
+    // appending its own health/cooldown warning here is what fed the outage
+    // banner back to the observer as prose to react to instead of resuming
+    // observations (2026-09-28, eigene-bremse-ist-eine-pause-kein-ausfall).
+    // The human/agent SessionStart context (loaded via SearchRoutes, not
+    // this function) still gets the warning.
     const context = await generateContext({
       cwd: cwd ?? process.cwd(),
       projects: [session.project],
       platformSource: session.platformSource,
       source: 'compact',
-    });
+    }, /* forHuman */ false, /* includeHealthWarning */ false);
     logger.info('SESSION', 'Briefed the observer generation with session-start context', {
       sessionId: session.sessionDbId,
       project: session.project,

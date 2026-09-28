@@ -187,6 +187,16 @@ const RESET_GRACE_MS = 15 * 60 * 1000; // 15 minutes
 const RESET_GRACE_UTILIZATION_FLOOR = 0.85;
 
 /**
+ * Who caused a quota abort. `provider_rejected` is the provider actually
+ * refusing (status='rejected', or overageStatus='rejected'). `own_guard` is
+ * claude-mem's own utilization-threshold or reset-grace check pausing ahead
+ * of any refusal — a deliberate pause, not an outage
+ * (eigene-bremse-ist-eine-pause-kein-ausfall). Carried alongside `reason` so
+ * callers can pick the right cooldown message without re-parsing it.
+ */
+export type QuotaAbortKind = 'provider_rejected' | 'own_guard';
+
+/**
  * Decide whether to abort SDK consumption based on the latest rate-limit
  * snapshot and the active auth method.
  *
@@ -200,7 +210,7 @@ export function shouldAbortForQuota(
   authMethod: string,
   store: RateLimitStore,
   now: number = Date.now(),
-): { abort: boolean; reason?: string; window?: RateLimitWindow } {
+): { abort: boolean; reason?: string; window?: RateLimitWindow; kind?: QuotaAbortKind } {
   // API-key users authorized per-call spend; the wall-clock guard is for
   // subscription quota only.
   if (isApiKeyAuth(authMethod)) {
@@ -247,6 +257,7 @@ export function shouldAbortForQuota(
         abort: true,
         window,
         reason: `quota:${window} rejected by provider`,
+        kind: 'provider_rejected',
       };
     }
 
@@ -255,6 +266,7 @@ export function shouldAbortForQuota(
         abort: true,
         window,
         reason: `quota:${window} utilization ${(util * 100).toFixed(1)}% >= ${(threshold * 100).toFixed(0)}%`,
+        kind: 'own_guard',
       };
     }
 
@@ -273,12 +285,43 @@ export function shouldAbortForQuota(
           abort: true,
           window,
           reason: `quota:${window} resets in ${Math.round(msUntilReset / 60000)}m (grace buffer ${RESET_GRACE_MS / 60000}m, util ${(util * 100).toFixed(1)}%)`,
+          kind: 'own_guard',
         };
       }
     }
   }
 
   return { abort: false };
+}
+
+/**
+ * Turn a carried quota-abort detail into the cooldown message and whether it
+ * should count toward the observer-health failure streak
+ * (eigene-bremse-ist-eine-pause-kein-ausfall).
+ *
+ * `provider_rejected` — or no detail at all, which is what the
+ * assistant-prose quota path in ResponseProcessor.ts sets: it aborts by
+ * setting `abortReason` directly, with no `shouldAbortForQuota()` decision to
+ * carry — means the provider actually refused, so this keeps today's
+ * provider-outage message and still arms the failure ledger.
+ *
+ * `own_guard` means claude-mem's OWN utilization/reset-grace check paused
+ * ahead of any refusal: the message names claude-mem as the one pausing plus
+ * the window/utilization/threshold from `reason`, and it must NOT count as an
+ * observer failure — the cooldown still arms (recordQuotaExhausted is called
+ * either way) so no request follows on, but session-start must not show the
+ * "can't save memories" outage banner for a pause claude-mem chose itself.
+ */
+export function resolveQuotaAbortOutcome(
+  detail: { kind: QuotaAbortKind; reason: string } | null | undefined,
+): { message: string; recordFailure: boolean } {
+  if (!detail || detail.kind === 'provider_rejected') {
+    return { message: 'Provider reported the inference allowance exhausted', recordFailure: true };
+  }
+  return {
+    message: `claude-mem paused its observer: ${detail.reason.replace(/^quota:/, '')}; the provider has not refused anything`,
+    recordFailure: false,
+  };
 }
 
 /**

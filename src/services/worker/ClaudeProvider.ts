@@ -22,6 +22,7 @@ import {
   buildUsageLimitHitProps,
   extractRateLimitInfo,
   shouldAbortForQuota,
+  type RateLimitStore,
 } from './RateLimitStore.js';
 
 // @ts-ignore - Agent SDK types may not be available
@@ -171,6 +172,46 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   // Default: treat unknown errors as transient (preserve old behavior of
   // retrying everything not explicitly marked unrecoverable).
   return new ClassifiedProviderError(message, { kind: 'transient', cause: err });
+}
+
+/**
+ * Quota-aware wall-clock guard body (#2234), pulled out of the SDK message
+ * loop below so this exact decision-to-session-mutation step — not a
+ * reimplementation of it — is what a test drives. Sets abortReason and
+ * quotaAbortDetail (carrying decision.kind, own_guard vs. provider_rejected,
+ * see eigene-bremse-ist-eine-pause-kein-ausfall) and aborts the controller.
+ * Returns true when it aborted, telling the caller to break out of the loop.
+ */
+export function abortSessionForQuotaIfNeeded(
+  session: ActiveSession,
+  authMethod: string,
+  store: RateLimitStore,
+): boolean {
+  const decision = shouldAbortForQuota(authMethod, store);
+  if (!decision.abort) {
+    return false;
+  }
+  logger.warn('SDK', `Aborting session for quota guard: ${decision.reason}`, {
+    sessionDbId: session.sessionDbId,
+    window: decision.window,
+    authMethod,
+  });
+  session.abortReason = `quota:${decision.window ?? 'unknown'}`;
+  // Carry WHO paused: SessionRoutes' abort-consumption block reads
+  // this to pick the cooldown message (own guard vs. provider
+  // refusal) without re-parsing `decision.reason`. Falls back to
+  // 'provider_rejected' — the safe, today's-message default — if
+  // `kind` is ever missing.
+  session.quotaAbortDetail = {
+    kind: decision.kind ?? 'provider_rejected',
+    reason: decision.reason ?? '',
+  };
+  try {
+    session.abortController.abort();
+  } catch {
+    // best-effort
+  }
+  return true;
 }
 
 export class ClaudeProvider {
@@ -349,19 +390,7 @@ export class ClaudeProvider {
               observed_billing: session.observedBilling,
             });
           }
-          const decision = shouldAbortForQuota(authMethod, globalRateLimitStore);
-          if (decision.abort) {
-            logger.warn('SDK', `Aborting session for quota guard: ${decision.reason}`, {
-              sessionDbId: session.sessionDbId,
-              window: decision.window,
-              authMethod,
-            });
-            session.abortReason = `quota:${decision.window ?? 'unknown'}`;
-            try {
-              session.abortController.abort();
-            } catch {
-              // best-effort
-            }
+          if (abortSessionForQuotaIfNeeded(session, authMethod, globalRateLimitStore)) {
             break;
           }
         }

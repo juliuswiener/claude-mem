@@ -419,7 +419,7 @@ describe('renderObserverQuotaCooldownNotice', () => {
       consecutiveFailures: 0,
       quotaCooldown: activeCooldown({ armedAt, until: armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS }),
     }), nowMs);
-    expect(notice).toContain('paused while a provider quota cooldown is active');
+    expect(notice).toContain('paused while a quota cooldown is active');
     expect(notice).toContain('claude');
     expect(notice).toContain('five_hour');
     expect(notice).toContain(new Date(armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS).toISOString());
@@ -483,6 +483,7 @@ describe('ContextBuilder observer-health injection', () => {
     emptyDbText: string;
     agentText: string;
     humanText: string;
+    briefingText: string;
   }
 
   function runContextChild(childDataDir: string): ChildRender {
@@ -493,7 +494,11 @@ describe('ContextBuilder observer-health injection', () => {
       const emptyDbText = await generateContext({ projects: ['observer-health-test'] });
       const agentText = withObserverHealthWarning('TIMELINE_BODY', false);
       const humanText = withObserverHealthWarning('TIMELINE_BODY', true);
-      console.log(JSON.stringify({ emptyDbText, agentText, humanText }));
+      // includeHealthWarning=false — the observer's own SessionStart briefing
+      // (recycle-conversation.ts's loadSessionStartContext calls this same
+      // way) must never see its own health/cooldown warning.
+      const briefingText = await generateContext({ projects: ['observer-health-test'] }, false, false);
+      console.log(JSON.stringify({ emptyDbText, agentText, humanText, briefingText }));
     `], {
       cwd: repoRoot,
       env: {
@@ -572,10 +577,10 @@ describe('ContextBuilder observer-health injection', () => {
       }))
     );
     const { emptyDbText, humanText } = runContextChild(dataDir);
-    expect(emptyDbText).toContain('paused while a provider quota cooldown is active');
+    expect(emptyDbText).toContain('paused while a quota cooldown is active');
     expect(emptyDbText).toContain('This is not a failure');
     expect(emptyDbText).not.toContain("can't save memories");
-    expect(humanText).toContain('paused while a provider quota cooldown is active');
+    expect(humanText).toContain('paused while a quota cooldown is active');
     expect(humanText).toContain('TIMELINE_BODY');
     expect(humanText.indexOf('TIMELINE_BODY')).toBeLessThan(humanText.indexOf('quota cooldown'));
   });
@@ -604,5 +609,30 @@ describe('ContextBuilder observer-health injection', () => {
     const { emptyDbText } = runContextChild(dataDir);
     expect(emptyDbText).toContain("can't save memories");
     expect(emptyDbText).not.toContain('This is not a failure');
+  });
+
+  // AK3 (eigene-quota-bremse-meldet-sich-als-anbieter-sperre): the observer's
+  // OWN SessionStart briefing must carry no health warning at all — neither
+  // the outage banner nor the cooldown notice — so it never answers with
+  // outage prose instead of observations. The human/agent SessionStart
+  // context (emptyDbText/humanText above) still gets it.
+  it('excludes both the outage banner and the cooldown notice from the observer\'s own briefing', () => {
+    writeFileSync(join(dataDir, 'observer-health.json'), JSON.stringify(unhealthyState()));
+    const unhealthyBriefing = runContextChild(dataDir).briefingText;
+    expect(unhealthyBriefing).not.toContain("can't save memories");
+    expect(unhealthyBriefing).not.toContain('quota cooldown');
+
+    writeFileSync(
+      join(dataDir, 'observer-health.json'),
+      JSON.stringify(unhealthyState({
+        consecutiveFailures: 0,
+        lastErrorAt: null,
+        lastSuccessAt: Date.now(),
+        quotaCooldown: activeCooldown({ until: Date.now() + 20 * 60_000 }),
+      }))
+    );
+    const cooldownBriefing = runContextChild(dataDir).briefingText;
+    expect(cooldownBriefing).not.toContain('quota cooldown');
+    expect(cooldownBriefing).not.toContain('This is not a failure');
   });
 });

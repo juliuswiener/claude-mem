@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'bun:test';
 import {
   RateLimitStore,
   shouldAbortForQuota,
+  resolveQuotaAbortOutcome,
   isApiKeyAuth,
   isNewRejection,
   extractRateLimitInfo,
@@ -9,6 +10,8 @@ import {
   buildUsageLimitHitProps,
   type RateLimitInfo,
 } from '../../src/services/worker/RateLimitStore.js';
+import { abortSessionForQuotaIfNeeded } from '../../src/services/worker/ClaudeProvider.js';
+import type { ActiveSession } from '../../src/services/worker-types.js';
 
 // Quota-aware wall-clock guard (#2234).
 //
@@ -283,6 +286,121 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
   it('does not abort with empty store', () => {
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
     expect(decision.abort).toBe(false);
+  });
+});
+
+// eigene-bremse-ist-eine-pause-kein-ausfall: a quota abort carries WHO caused
+// it, so callers can tell claude-mem's own guard apart from an actual
+// provider refusal without re-parsing `reason`.
+describe('shouldAbortForQuota — kind (own guard vs. provider rejection)', () => {
+  const cliAuth = 'cli';
+  let store: RateLimitStore;
+  beforeEach(() => { store = freshStore(); });
+
+  it('marks a provider rejection as kind "provider_rejected"', () => {
+    store.set({ rateLimitType: 'overage', utilization: 0, isUsingOverage: false, status: 'rejected' });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.kind).toBe('provider_rejected');
+  });
+
+  it('marks an own utilization-threshold abort as kind "own_guard"', () => {
+    store.set({ rateLimitType: 'five_hour', utilization: 0.96 });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.kind).toBe('own_guard');
+  });
+
+  it('marks an own reset-grace abort as kind "own_guard"', () => {
+    store.set({
+      rateLimitType: 'five_hour',
+      utilization: 0.90,
+      resetsAt: FIXED_NOW + 10 * 60 * 1000,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.kind).toBe('own_guard');
+  });
+});
+
+describe('resolveQuotaAbortOutcome', () => {
+  it('keeps today\'s provider-outage message and arms the failure ledger for a provider rejection', () => {
+    const outcome = resolveQuotaAbortOutcome({ kind: 'provider_rejected', reason: 'quota:seven_day rejected by provider' });
+    expect(outcome.message).toBe('Provider reported the inference allowance exhausted');
+    expect(outcome.recordFailure).toBe(true);
+  });
+
+  it('keeps today\'s message and arms the failure ledger when no detail is carried (assistant-prose quota path)', () => {
+    const outcome = resolveQuotaAbortOutcome(null);
+    expect(outcome.message).toBe('Provider reported the inference allowance exhausted');
+    expect(outcome.recordFailure).toBe(true);
+  });
+
+  it('names claude-mem, the window, utilization and threshold for an own-guard pause, and does not arm the failure ledger', () => {
+    const outcome = resolveQuotaAbortOutcome({
+      kind: 'own_guard',
+      reason: 'quota:seven_day utilization 93.0% >= 93%',
+    });
+    expect(outcome.message).toContain('claude-mem paused its observer');
+    expect(outcome.message).toContain('seven_day');
+    expect(outcome.message).toContain('93.0%');
+    expect(outcome.message).toContain('93%');
+    expect(outcome.message).toContain('the provider has not refused anything');
+    expect(outcome.recordFailure).toBe(false);
+  });
+});
+
+// eigene-bremse-ist-eine-pause-kein-ausfall, call-site wiring: exercises the
+// REAL function ClaudeProvider's SDK message loop calls on a quota abort
+// (not a reimplementation of it), so a mutant that hardcodes
+// `kind: 'provider_rejected'` instead of forwarding `decision.kind` shows up
+// here — resolveQuotaAbortOutcome/shouldAbortForQuota tests above only cover
+// the helpers in isolation and would stay green under that mutant.
+function fakeSession(): ActiveSession {
+  return {
+    sessionDbId: 1,
+    abortController: new AbortController(),
+    abortReason: null,
+    quotaAbortDetail: null,
+  } as unknown as ActiveSession;
+}
+
+describe('abortSessionForQuotaIfNeeded — real ClaudeProvider call site', () => {
+  it('forwards kind "own_guard" from the decision onto session.quotaAbortDetail', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'five_hour', utilization: 0.96 });
+    const session = fakeSession();
+
+    const aborted = abortSessionForQuotaIfNeeded(session, 'cli', store);
+
+    expect(aborted).toBe(true);
+    expect(session.quotaAbortDetail?.kind).toBe('own_guard');
+    expect(session.abortReason).toBe('quota:five_hour');
+    expect(session.abortController.signal.aborted).toBe(true);
+  });
+
+  it('forwards kind "provider_rejected" from the decision onto session.quotaAbortDetail', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', utilization: 0, isUsingOverage: false, status: 'rejected' });
+    const session = fakeSession();
+
+    const aborted = abortSessionForQuotaIfNeeded(session, 'cli', store);
+
+    expect(aborted).toBe(true);
+    expect(session.quotaAbortDetail?.kind).toBe('provider_rejected');
+  });
+
+  it('leaves the session untouched when the guard does not abort', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'five_hour', utilization: 0.1 });
+    const session = fakeSession();
+
+    const aborted = abortSessionForQuotaIfNeeded(session, 'cli', store);
+
+    expect(aborted).toBe(false);
+    expect(session.quotaAbortDetail).toBeNull();
+    expect(session.abortReason).toBeNull();
+    expect(session.abortController.signal.aborted).toBe(false);
   });
 });
 

@@ -40,8 +40,10 @@ import {
   getQuotaCooldown,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
   quotaCooldownEndsAtMs,
+  type QuotaProvider,
 } from '../../../../shared/quota-cooldown.js';
-import { globalRateLimitStore, type RateLimitWindow } from '../../RateLimitStore.js';
+import { globalRateLimitStore, resolveQuotaAbortOutcome, type RateLimitWindow } from '../../RateLimitStore.js';
+import type { ActiveSession } from '../../../worker-types.js';
 import { isClassified, describeProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 import { isSessionParkedForSlot } from '../../../../supervisor/process-registry.js';
@@ -80,6 +82,43 @@ function normalizeAbortReason(
     case 'provider_switch': return 'provider_switch';
     default: return 'none';
   }
+}
+
+/**
+ * Quota-abort accounting: the ONE point where "did a quota abort just
+ * happen, and if so was it claude-mem's own guard or the provider" is
+ * decided. own_guard pauses (eigene-bremse-ist-eine-pause-kein-ausfall) get a
+ * claude-mem-authored cooldown message and must NOT arm the observer-failure
+ * ledger — a deliberate pause, not an outage. Every other case (provider
+ * rejection, or no detail at all — the assistant-prose quota path never
+ * went through shouldAbortForQuota) keeps today's message and failure
+ * accounting. Reads and clears both abort fields off the session and returns the
+ * reason. Exported so a test can drive this exact code, not a reimplementation
+ * of it — the .finally() handler below just calls it.
+ */
+export function consumeAbortReason(
+  provider: QuotaProvider,
+  session: Pick<ActiveSession, 'abortReason' | 'quotaAbortDetail'>,
+): string | null {
+  const reason = session.abortReason ?? null;
+  const quotaAbortDetail = session.quotaAbortDetail ?? null;
+  session.abortReason = null;  // consume the reason
+  session.quotaAbortDetail = null;  // consume alongside it
+  if (normalizeAbortReason(reason) !== 'quota') {
+    return reason;
+  }
+  const quotaWindow = reason?.split(':')[1];
+  const { message: quotaMessage, recordFailure } = resolveQuotaAbortOutcome(quotaAbortDetail);
+  recordQuotaExhausted(provider, quotaMessage, quotaWindow, Date.now(), reportedResetsAtMs(quotaWindow));
+  // Quota returned as assistant prose never throws, so it never reaches
+  // the .catch above and never armed the health ledger. Without this the
+  // session-start warning is structurally blind to an entire outage
+  // class: the allowance is spent, no observation will ever store, and
+  // the user is told nothing.
+  if (recordFailure) {
+    recordObserverFailure(provider, { message: quotaMessage, kind: 'quota_exhausted' });
+  }
+  return reason;
 }
 
 export class SessionRoutes extends BaseRouteHandler {
@@ -500,23 +539,10 @@ export class SessionRoutes extends BaseRouteHandler {
           return;
         }
 
-        const reason = session.abortReason ?? null;
-        session.abortReason = null;  // consume the reason
         // Quota surfaced as assistant prose aborts here rather than throwing, so
         // it must arm the breaker too — otherwise the prose path keeps the
         // per-observation request storm the classified path no longer has.
-        if (normalizeAbortReason(reason) === 'quota') {
-          const quotaMessage = 'Provider reported the inference allowance exhausted';
-          const quotaWindow = reason?.split(':')[1];
-          recordQuotaExhausted(provider, quotaMessage, quotaWindow, Date.now(),
-            reportedResetsAtMs(quotaWindow));
-          // Quota returned as assistant prose never throws, so it never reaches
-          // the .catch above and never armed the health ledger. Without this the
-          // session-start warning is structurally blind to an entire outage
-          // class: the allowance is spent, no observation will ever store, and
-          // the user is told nothing.
-          recordObserverFailure(provider, { message: quotaMessage, kind: 'quota_exhausted' });
-        }
+        const reason = consumeAbortReason(provider, session);
         if (reason !== null) {
           // Abort accounting lives HERE, where the reason is consumed — the
           // ONLY point every abort flow (idle / shutdown / overflow / quota)
