@@ -17,7 +17,7 @@ import {
 import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
-import { parseFile, formatFoldedView, unfoldSymbol, isTreeSitterBinExecutable, resolveTreeSitterBinPath } from '../services/smart-file-read/parser.js';
+import { parseFile, formatFoldedView, unfoldSymbol, isTreeSitterBinExecutable, resolveTreeSitterBinPath, repairTreeSitterBin } from '../services/smart-file-read/parser.js';
 import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -447,10 +447,12 @@ async function ensureWorkerConnection(): Promise<boolean> {
 // unsupported one. Naming the missing binary and the fix here saves an agent from
 // concluding the source file itself is unreadable. Returns null when the binary
 // is fine, so callers fall back to their normal "unsupported language" message.
+// A missing binary is first repaired in place (repairTreeSitterBin): the Setup hook
+// that would do it fires only with --init, never on a normal launch.
 function missingTreeSitterBinMessage(): string | null {
-  const binPath = resolveTreeSitterBinPath();
-  if (isTreeSitterBinExecutable(binPath)) return null;
-  return `tree-sitter binary not found at ${binPath} — restart Claude Code to let Setup reinstall it, or run 'node install.js' in that package's directory.`;
+  if (isTreeSitterBinExecutable(resolveTreeSitterBinPath())) return null;
+  if (repairTreeSitterBin()) return null;
+  return `tree-sitter binary not found at ${resolveTreeSitterBinPath()} and the automatic download failed — run 'node install.js' inside the plugin's node_modules/tree-sitter-cli directory, or put tree-sitter on PATH.`;
 }
 
 const tools = [
@@ -769,6 +771,10 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['file_path', 'symbol_name']
     },
     handler: async (args: any) => {
+      const missingBinMessage = missingTreeSitterBinMessage();
+      if (missingBinMessage) {
+        return { content: [{ type: 'text' as const, text: missingBinMessage }] };
+      }
       const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
       const unfolded = unfoldSymbol(content, filePath, args.symbol_name);
@@ -787,11 +793,10 @@ NEVER fetch full details without filtering first. 10x token savings.`,
           }]
         };
       }
-      const missingBinMessage = missingTreeSitterBinMessage();
       return {
         content: [{
           type: 'text' as const,
-          text: missingBinMessage ?? `Could not parse ${args.file_path}. File may be unsupported or empty.`
+          text: `Could not parse ${args.file_path}. File may be unsupported or empty.`
         }]
       };
     }
@@ -810,6 +815,10 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['file_path']
     },
     handler: async (args: any) => {
+      const missingBinMessage = missingTreeSitterBinMessage();
+      if (missingBinMessage) {
+        return { content: [{ type: 'text' as const, text: missingBinMessage }] };
+      }
       const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
       const parsed = parseFile(content, filePath);
@@ -818,11 +827,10 @@ NEVER fetch full details without filtering first. 10x token savings.`,
           content: [{ type: 'text' as const, text: formatFoldedView(parsed) }]
         };
       }
-      const missingBinMessage = missingTreeSitterBinMessage();
       return {
         content: [{
           type: 'text' as const,
-          text: missingBinMessage ?? `Could not parse ${args.file_path}. File may use an unsupported language or be empty.`
+          text: `Could not parse ${args.file_path}. File may use an unsupported language or be empty.`
         }]
       };
     }

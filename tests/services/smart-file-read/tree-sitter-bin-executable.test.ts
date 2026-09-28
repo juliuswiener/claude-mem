@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isTreeSitterBinExecutable } from '../../../src/services/smart-file-read/parser.js';
+import { isTreeSitterBinExecutable, repairTreeSitterBin } from '../../../src/services/smart-file-read/parser.js';
 
 // AK3 (fehlendes-tree-sitter-binary-wird-beim-setup-nachgeholt): a --ignore-scripts
 // install leaves tree-sitter-cli's package.json and cli.js in place but skips the
@@ -60,6 +60,40 @@ describe('parser.ts isTreeSitterBinExecutable', () => {
     const dir = mkdtempSync(join(tmpdir(), 'tree-sitter-bin-'));
     try {
       expect(isTreeSitterBinExecutable(join(dir, 'tree-sitter'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// The Setup hook fires only with --init/--init-only/--maintenance, never on a normal
+// launch, so the repair that actually runs is this one: the MCP server calls it on the
+// first smart_* request that finds no binary.
+describe('parser.ts repairTreeSitterBin', () => {
+  function fakeCli(installJs: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'tree-sitter-cli-'));
+    writeFileSync(join(dir, 'package.json'), '{"name":"tree-sitter-cli"}');
+    writeFileSync(join(dir, 'install.js'), installJs);
+    return dir;
+  }
+  const WRITES_BIN = "require('fs').writeFileSync('tree-sitter', '#!/bin/sh\\n', { mode: 0o755 });\n";
+
+  it('runs install.js in the package directory and reports the binary as present', () => {
+    const dir = fakeCli(WRITES_BIN);
+    try {
+      expect(repairTreeSitterBin(dir)).toBe(true);
+      expect(isTreeSitterBinExecutable(join(dir, 'tree-sitter'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('tries a failing install.js once per directory, not on every call', () => {
+    const dir = fakeCli("require('fs').appendFileSync('runs', 'x'); process.exit(1);\n");
+    try {
+      expect(repairTreeSitterBin(dir)).toBe(false);
+      expect(repairTreeSitterBin(dir)).toBe(false);
+      expect(require('fs').readFileSync(join(dir, 'runs'), 'utf8')).toBe('x');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -399,6 +399,37 @@ export function isTreeSitterBinExecutable(binPath: string = resolveTreeSitterBin
   });
 }
 
+// The Setup hook's ensureTreeSitterBinary (version-check.js) fires only with
+// --init / --init-only / --maintenance, never on a normal launch, so after a
+// plugin update the binary stays missing. This is the repair that does run: the
+// MCP server calls it on the first smart_* request that finds no binary. It runs
+// only tree-sitter-cli's own install.js (a ~25 MB download, once per plugin
+// version), and a failed attempt is not retried for the life of the process.
+const repairAttempted = new Set<string>();
+
+export function repairTreeSitterBin(pkgDir?: string): boolean {
+  let dir = pkgDir;
+  if (!dir) {
+    try {
+      dir = dirname(_require.resolve("tree-sitter-cli/package.json"));
+    } catch {
+      return false;
+    }
+  }
+  const binPath = join(dir, process.platform === "win32" ? "tree-sitter.exe" : "tree-sitter");
+  if (!repairAttempted.has(dir)) {
+    repairAttempted.add(dir);
+    try {
+      execFileSync(process.execPath, ["install.js"], { cwd: dir, timeout: 60000, stdio: ["pipe", "pipe", "pipe"] });
+    } catch (error) {
+      logger.warn('WORKER', `tree-sitter-cli install.js failed in ${dir}`, undefined, error instanceof Error ? error : undefined);
+    }
+    // getTreeSitterBin memoized the bare-name fallback while the binary was missing.
+    cachedBinPath = null;
+  }
+  return isTreeSitterBinExecutable(binPath);
+}
+
 let cachedBinPath: string | null = null;
 
 function getTreeSitterBin(): string {
