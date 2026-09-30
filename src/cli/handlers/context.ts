@@ -9,6 +9,7 @@ import {
   executeWithWorkerFallback,
   isWorkerFallback,
   getWorkerPort,
+  consumeWorkerOutageNotice,
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
@@ -75,7 +76,10 @@ const sessionStartContext: EventHandler = {
       : undefined;
     const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
     if (isWorkerFallback(contextResult)) {
-      return emptyResult;
+      // SessionStart context is synchronous, so a systemMessage here is shown
+      // to the user: the once-per-session worker-outage notice, if any.
+      const outageNotice = await consumeWorkerOutageNotice(input.sessionId);
+      return outageNotice ? { ...emptyResult, systemMessage: outageNotice } : emptyResult;
     }
 
     let additionalContext: string;

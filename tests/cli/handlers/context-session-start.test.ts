@@ -17,6 +17,8 @@ const realProjectNameSnapshot = { ...realProjectName };
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 const calls: unknown[][] = [];
+let workerUnreachable = false;
+const outageNoticeRequests: Array<string | undefined> = [];
 
 mock.module('../../../src/shared/hook-settings.js', () => ({
   loadFromFileOnce: () => ({ CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'false' }),
@@ -39,7 +41,11 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
     return 'context from worker';
   },
   getWorkerPort: () => 37777,
-  isWorkerFallback: () => false,
+  isWorkerFallback: () => workerUnreachable,
+  consumeWorkerOutageNotice: async (sessionId: string | undefined) => {
+    outageNoticeRequests.push(sessionId);
+    return 'claude-mem worker unreachable for 3 consecutive hooks';
+  },
 }));
 
 afterAll(() => {
@@ -85,5 +91,25 @@ describe('contextHandler SessionStart path', () => {
       undefined,
       undefined,
     ]]);
+  });
+
+  it('shows the worker-outage notice as systemMessage when SessionStart falls back', async () => {
+    calls.length = 0;
+    outageNoticeRequests.length = 0;
+    workerUnreachable = true;
+    try {
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      const result = await contextHandler.execute({
+        sessionId: 'session-outage',
+        cwd: '/tmp/repo',
+        platform: 'claude-code',
+      });
+
+      expect(result.hookSpecificOutput?.additionalContext).toBe('');
+      expect(result.systemMessage).toBe('claude-mem worker unreachable for 3 consecutive hooks');
+      expect(outageNoticeRequests).toEqual(['session-outage']);
+    } finally {
+      workerUnreachable = false;
+    }
   });
 });
