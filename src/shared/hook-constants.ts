@@ -9,9 +9,10 @@ export const HOOK_TIMEOUTS = {
   WINDOWS_MULTIPLIER: 1.5
 } as const;
 
+// Hooks only ever exit 0: Claude Code reads exit 2 as "block", and a
+// claude-mem failure must never block the user (plan-17 step 2).
 export const HOOK_EXIT_CODES = {
   SUCCESS: 0,
-  BLOCKING_ERROR: 2,
 } as const;
 
 export function getTimeout(baseTimeout: number): number {
