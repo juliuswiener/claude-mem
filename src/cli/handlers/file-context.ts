@@ -10,9 +10,12 @@ import { statSync } from 'fs';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { claimFileContextInjection } from './file-context-dedupe.js';
+import { claimFileContextInjection, claimVaultNoteDelivery } from './file-context-dedupe.js';
+import { getGoverningVaultNotes, formatVaultNotes, shownVaultSlugs } from './vault-notes.js';
 
 const FILE_READ_GATE_MIN_BYTES = 1_500;
+
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit']);
 
 const FETCH_LOOKAHEAD_LIMIT = 40;
 
@@ -139,15 +142,6 @@ function formatFileTimeline(
 
 export const fileContextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
-    if (input.agentId) {
-      logger.debug('HOOK', 'Skipping file context: subagent context detected', {
-        sessionId: input.sessionId,
-        agentId: input.agentId,
-        agentType: input.agentType
-      });
-      return { continue: true, suppressOutput: true };
-    }
-
     const toolInput = input.toolInput as Record<string, unknown> | undefined;
     const filePaths = Array.isArray(toolInput?.filePaths)
       ? (toolInput.filePaths as unknown[]).filter((p): p is string => typeof p === 'string').slice(0, MAX_FILE_CONTEXT_PATHS)
@@ -159,14 +153,41 @@ export const fileContextHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    if (input.cwd && !shouldTrackProject(input.cwd)) {
-      logger.debug('HOOK', 'Project excluded from tracking, skipping file context', { cwd: input.cwd });
-      return { continue: true, suppressOutput: true };
+    // Timeline only for main-session Reads of tracked projects (#2094: subagents
+    // get no Read mutation; Edit/Write/MultiEdit: the timeline would only be
+    // noise). The vault block is delivered in every one of these cases.
+    const timelineWanted =
+      !input.agentId &&
+      !EDIT_TOOLS.has(input.toolName ?? '') &&
+      !(input.cwd && !shouldTrackProject(input.cwd));
+    if (!timelineWanted) {
+      logger.debug('HOOK', 'Skipping file context timeline, vault notes only', {
+        sessionId: input.sessionId,
+        agentId: input.agentId,
+        toolName: input.toolName,
+      });
     }
 
-    const timelineResults = await Promise.allSettled(
-      candidatePaths.map(candidatePath => buildFileContextTimeline(input, candidatePath))
+    // Vault notes are independent of the timeline: they apply even to files
+    // without observations. The adapter never throws.
+    // AK4: once per (session, agent, file). Claimed only when notes exist, with
+    // the slugs actually shown; Read and Edit share the protocol.
+    // ponytail: with several paths the merged block may rank differently than
+    // the per-path slugs claimed; per-path blocks if that ever matters.
+    const vaultNotesPromise = Promise.all(
+      candidatePaths.map(async p => {
+        const abs = path.resolve(input.cwd || process.cwd(), p);
+        const notes = await getGoverningVaultNotes(abs);
+        const slugs = shownVaultSlugs(notes);
+        if (slugs.length === 0) return [];
+        if (input.sessionId && !claimVaultNoteDelivery(input.sessionId, input.agentId ?? '', abs, slugs)) return [];
+        return notes;
+      })
     );
+    const timelineResults = timelineWanted
+      ? await Promise.allSettled(candidatePaths.map(candidatePath => buildFileContextTimeline(input, candidatePath)))
+      : [];
+    const vaultBlock = formatVaultNotes((await vaultNotesPromise).flat());
     const timelines: string[] = [];
 
     timelineResults.forEach((result, index) => {
@@ -179,6 +200,8 @@ export const fileContextHandler: EventHandler = {
         error: result.reason instanceof Error ? result.reason.message : String(result.reason),
       });
     });
+
+    if (vaultBlock) timelines.push(vaultBlock);
 
     if (timelines.length === 0) {
       return { continue: true, suppressOutput: true };

@@ -46,6 +46,32 @@ const GATE_TABLE_DDL = `
 // The `excluded.observation_epoch > ...` guard also keeps the stored epoch
 // monotonic: a hook that finishes late carrying an older epoch neither wins the
 // claim nor rolls the row back to that stale value.
+// Vault-note delivery protocol: which governing notes were already shown to
+// (session, agent, file). Derived state, device-local, slugs only (no titles,
+// no note text). agent_id is '' for the main session: a subagent has its own
+// context and must receive the notes itself.
+const VAULT_DELIVERY_DDL = `
+  CREATE TABLE IF NOT EXISTS vault_note_deliveries (
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    slugs TEXT NOT NULL,
+    delivered_at_epoch INTEGER NOT NULL,
+    PRIMARY KEY (session_id, agent_id, file_path)
+  )
+`;
+
+const CLAIM_VAULT_DELIVERY_SQL = `
+  INSERT INTO vault_note_deliveries (session_id, agent_id, file_path, slugs, delivered_at_epoch)
+  VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(session_id, agent_id, file_path) DO NOTHING
+  RETURNING 1 AS claimed
+`;
+
+const DELETE_EXPIRED_VAULT_SQL = `
+  DELETE FROM vault_note_deliveries WHERE delivered_at_epoch < ?
+`;
+
 const CLAIM_GATE_SQL = `
   INSERT INTO file_context_injections
     (session_id, file_path, observation_epoch, injected_at_epoch)
@@ -101,6 +127,7 @@ function openGateDb(): Database | null {
     opened = new Database(dbPath);
     applySqliteConnectionPragmas(opened);
     opened.run(GATE_TABLE_DDL);
+    opened.run(VAULT_DELIVERY_DDL);
     cachedGateDb = { path: dbPath, db: opened };
     return cachedGateDb.db;
   } catch (err) {
@@ -152,6 +179,34 @@ export function claimFileContextInjection(
     return db.query(CLAIM_GATE_SQL).get(sessionId, resolvedPath, newestObservationEpoch, now) != null;
   } catch (err) {
     logger.debug('HOOK', 'file-context gate claim failed, injecting without dedupe', {
+      error: describeError(err),
+    });
+    return true;
+  }
+}
+
+/**
+ * Atomically claim the right to deliver these vault-note slugs for
+ * (session, agent, file). `true` = this caller delivers; `false` = already
+ * delivered. Fails open like the timeline claim.
+ */
+export function claimVaultNoteDelivery(
+  sessionId: string,
+  agentId: string,
+  absolutePath: string,
+  slugs: string[],
+): boolean {
+  if (!sessionId) return true;
+  const db = openGateDb();
+  if (!db) return true;
+
+  try {
+    const now = Date.now();
+    db.query(DELETE_EXPIRED_VAULT_SQL).run(now - GATE_ROW_TTL_MS);
+    return db.query(CLAIM_VAULT_DELIVERY_SQL)
+      .get(sessionId, agentId, absolutePath, JSON.stringify(slugs), now) != null;
+  } catch (err) {
+    logger.debug('HOOK', 'vault delivery claim failed, delivering without dedupe', {
       error: describeError(err),
     });
     return true;
