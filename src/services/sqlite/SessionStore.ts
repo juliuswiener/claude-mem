@@ -162,6 +162,17 @@ interface SdkSessionDetailRow {
   observed_billing: string | null;
 }
 
+/**
+ * A by-ids lookup's row limit: a positive integer, or undefined for no limit.
+ * Callers can pass a raw query-string value, so it is coerced and checked here
+ * and then bound as a parameter, never written into the SQL text. Only safe
+ * integers count: SQLite rejects a bound LIMIT beyond its integer range.
+ */
+function positiveIntegerRowLimit(limit: unknown): number | undefined {
+  const parsedLimit = Number(limit);
+  return Number.isSafeInteger(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
+}
+
 export class SessionStore {
   public db: Database;
   private readonly syncOpsEnabled: boolean;
@@ -2592,10 +2603,11 @@ export class SessionStore {
   ): ObservationSearchResult[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit, project, platformSource, type, concepts, files } = options;
+    const { orderBy = 'date_desc', project, platformSource, type, concepts, files } = options;
+    const limit = positiveIntegerRowLimit(options.limit);
     const preserveIdOrder = orderBy === 'relevance';
     const orderClause = preserveIdOrder ? '' : `ORDER BY o.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
-    const limitClause = limit && !preserveIdOrder ? `LIMIT ${limit}` : '';
+    const limitClause = limit && !preserveIdOrder ? 'LIMIT ?' : '';
 
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
@@ -2645,6 +2657,7 @@ export class SessionStore {
     const whereClause = additionalConditions.length > 0
       ? `WHERE o.id IN (${placeholders}) AND ${additionalConditions.join(' AND ')}`
       : `WHERE o.id IN (${placeholders})`;
+    if (limitClause) params.push(limit);
 
     const stmt = this.db.prepare(`
       SELECT o.*
@@ -3273,10 +3286,11 @@ export class SessionStore {
   ): SessionSummarySearchResult[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit, project, platformSource } = options;
+    const { orderBy = 'date_desc', project, platformSource } = options;
+    const limit = positiveIntegerRowLimit(options.limit);
     const preserveIdOrder = orderBy === 'relevance';
     const orderClause = preserveIdOrder ? '' : `ORDER BY ss.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
-    const limitClause = limit && !preserveIdOrder ? `LIMIT ${limit}` : '';
+    const limitClause = limit && !preserveIdOrder ? 'LIMIT ?' : '';
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
     const additionalConditions: string[] = [];
@@ -3294,6 +3308,7 @@ export class SessionStore {
     const additionalFilter = additionalConditions.length > 0
       ? `AND ${additionalConditions.join(' AND ')}`
       : '';
+    if (limitClause) params.push(limit);
 
     const stmt = this.db.prepare(`
       SELECT ss.*
@@ -3318,10 +3333,11 @@ export class SessionStore {
   ): UserPromptRecord[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit, project, platformSource } = options;
+    const { orderBy = 'date_desc', project, platformSource } = options;
+    const limit = positiveIntegerRowLimit(options.limit);
     const preserveIdOrder = orderBy === 'relevance';
     const orderClause = preserveIdOrder ? '' : `ORDER BY up.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
-    const limitClause = limit && !preserveIdOrder ? `LIMIT ${limit}` : '';
+    const limitClause = limit && !preserveIdOrder ? 'LIMIT ?' : '';
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
     const additionalConditions: string[] = [];
@@ -3339,6 +3355,7 @@ export class SessionStore {
     const additionalFilter = additionalConditions.length > 0
       ? `AND ${additionalConditions.join(' AND ')}`
       : '';
+    if (limitClause) params.push(limit);
 
     const stmt = this.db.prepare(`
       SELECT
