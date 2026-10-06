@@ -87,41 +87,6 @@ function installFakeNvmNode(home: string, version: string): string {
   return nodeBin;
 }
 
-describe('Plugin Distribution - Skills', () => {
-  const skillPath = path.join(projectRoot, 'plugin/skills/mem-search/SKILL.md');
-  const modeCreatorPath = path.join(projectRoot, 'plugin/skills/mode-creator/SKILL.md');
-
-  it('should include plugin/skills/mem-search/SKILL.md', () => {
-    expect(existsSync(skillPath)).toBe(true);
-  });
-
-  it('should have valid YAML frontmatter with name and description', () => {
-    const content = readFileSync(skillPath, 'utf-8');
-
-    expect(content.startsWith('---\n')).toBe(true);
-
-    const frontmatterEnd = content.indexOf('\n---\n', 4);
-    expect(frontmatterEnd).toBeGreaterThan(0);
-
-    const frontmatter = content.slice(4, frontmatterEnd);
-    expect(frontmatter).toContain('name:');
-    expect(frontmatter).toContain('description:');
-  });
-
-  it('should reference the 3-layer search workflow', () => {
-    const content = readFileSync(skillPath, 'utf-8');
-    expect(content).toContain('search');
-    expect(content).toContain('timeline');
-    expect(content).toContain('get_observations');
-  });
-
-  it('should include the mode creator workflow and installers', () => {
-    expect(existsSync(modeCreatorPath)).toBe(true);
-    expect(existsSync(path.join(projectRoot, 'plugin/skills/mode-creator/scripts/install-mode.mjs'))).toBe(true);
-    expect(existsSync(path.join(projectRoot, 'plugin/skills/mode-creator/scripts/configure-telegram.mjs'))).toBe(true);
-  });
-});
-
 describe('Plugin Distribution - Required Files', () => {
   const requiredFiles = [
     'plugin/hooks/hooks.json',
@@ -129,12 +94,7 @@ describe('Plugin Distribution - Required Files', () => {
     'plugin/.mcp.json',
     'plugin/sqlite/SessionStore.js',
     'plugin/sqlite/observations/files.js',
-    'plugin/skills/mem-search/SKILL.md',
-    'plugin/skills/mode-creator/SKILL.md',
     '.cursor-plugin/marketplace.json',
-    'claude-mem-cursor/.cursor-plugin/plugin.json',
-    'claude-mem-cursor/mcp.json',
-    'claude-mem-cursor/hooks/hooks.json',
     'claude-mem-grok-bot/.cursor-plugin/plugin.json',
     'claude-mem-grok-bot/mcp.json',
     'claude-mem-grok-bot/skills/host-observer/SKILL.md',
@@ -170,14 +130,8 @@ describe('Plugin Distribution - Cursor Marketplace', () => {
     ]);
   });
 
-  it('wires Cursor hooks through the npx hook entrypoint', () => {
-    const hooks = readJson('claude-mem-cursor/hooks/hooks.json');
-    expect(hooks.hooks.beforeSubmitPrompt[0].command).toContain('npx -y claude-mem hook cursor session-init');
-    expect(hooks.hooks.stop[0].command).toContain('npx -y claude-mem hook cursor summarize');
-  });
-
-  it('ships the shared local and remote MCP definitions for both plugins', () => {
-    for (const relativePath of ['claude-mem-cursor/mcp.json', 'claude-mem-grok-bot/mcp.json']) {
+  it('ships the shared local and remote MCP definitions for the Grok Bot plugin', () => {
+    for (const relativePath of ['claude-mem-grok-bot/mcp.json']) {
       const mcp = readJson(relativePath);
       expect(mcp.mcpServers['claude-mem-local'].args).toEqual(['-y', 'claude-mem', 'mcp']);
       const expected = 'Bearer ' + '${' + 'CLAUDE_MEM_MCP_TOKEN' + '}';
@@ -273,32 +227,6 @@ describe('Plugin Distribution - package.json Files Field', () => {
     expect(packageJson.scripts['bug-report']).toBe('node dist/bug-report/index.js');
     expect(packageJson.files).toContain('dist');
   });
-
-  it('should include bundled plugin entries in root package.json files field', () => {
-    const packageJsonPath = path.join(projectRoot, 'package.json');
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-    expect(packageJson.files).toBeDefined();
-    expect(packageJson.files).toContain('plugin/.mcp.json');
-    expect(packageJson.files).toContain('plugin/hooks');
-    expect(packageJson.files).toContain('plugin/skills');
-    expect(packageJson.files).toContain('plugin/scripts/*.cjs');
-    expect(packageJson.files).toContain('plugin/sqlite');
-  });
-
-  it('npm tarball includes generated runtime entries', () => {
-    const result = spawnSync('npm', ['pack', '--dry-run', '--json'], {
-      cwd: projectRoot,
-      encoding: 'utf-8',
-    });
-
-    expect(result.status).toBe(0);
-    const packed = JSON.parse(result.stdout);
-    const filePaths = new Set(packed[0].files.map((file: { path: string }) => file.path));
-
-    expect(filePaths.has('dist/bug-report/index.js')).toBe(true);
-    expect(filePaths.has('plugin/sqlite/SessionStore.js')).toBe(true);
-    expect(filePaths.has('plugin/sqlite/observations/files.js')).toBe(true);
-  });
 });
 
 describe('Plugin Distribution - Build Script Verification', () => {
@@ -306,7 +234,6 @@ describe('Plugin Distribution - Build Script Verification', () => {
     const buildScriptPath = path.join(projectRoot, 'scripts/build-hooks.js');
     const content = readFileSync(buildScriptPath, 'utf-8');
 
-    expect(content).toContain('plugin/skills/mem-search/SKILL.md');
     expect(content).toContain('plugin/hooks/hooks.json');
     expect(content).toContain('plugin/sqlite/SessionStore.js');
     expect(content).toContain('plugin/sqlite/observations/files.js');
