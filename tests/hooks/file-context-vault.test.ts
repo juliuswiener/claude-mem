@@ -176,8 +176,9 @@ describe('fileContextHandler — AK2 edit tools and AK2a silent exits', () => {
     const r = await run({ toolName: 'Edit' });
     // AK11: no permissionDecision at all for edit tools (user's prompt stays in force).
     expect((r.hookSpecificOutput as any)?.permissionDecision).toBeUndefined();
+    // AK12: nor for Read (the hook is synchronous, 'allow' would override the prompt).
     const rd = await run({});
-    expect((rd.hookSpecificOutput as any)?.permissionDecision).toBe('allow');
+    expect((rd.hookSpecificOutput as any)?.permissionDecision).toBeUndefined();
   });
 
   it('AK2 Edit ohne Notizen bleibt still', async () => {
@@ -227,7 +228,7 @@ describe('fileContextHandler — AK2 edit tools and AK2a silent exits', () => {
 
   it('AK2 Hook-Matcher fuer file-context traegt Read, Edit, Write, MultiEdit', () => {
     const hooks = JSON.parse(readFileSync(new URL('../../plugin/hooks/hooks.json', import.meta.url), 'utf-8')).hooks;
-    // AK11: split into two entries (Read async, Edit|Write|MultiEdit sync); together they cover all four.
+    // AK11: split into two entries (Read, Edit|Write|MultiEdit; both sync since AK12); together they cover all four.
     const matchers = hooks.PreToolUse
       .filter((m: any) => m.hooks.some((h: any) => h.command.includes('hook claude-code file-context')))
       .flatMap((m: any) => m.matcher.split('|'));
@@ -241,7 +242,7 @@ describe('fileContextHandler — vault notes in the gate', () => {
     setVaultNotes([note('regel-a', { verified: '2026-10-02' })]);
 
     const out = (await read()).hookSpecificOutput!;
-    expect(out.permissionDecision).toBe('allow');
+    expect(out.permissionDecision).toBeUndefined(); // AK12
     expect(out.additionalContext).toContain('prior observations');
     expect(out.additionalContext).toContain('Vault-Notizen, die diese Datei regieren:');
     expect(out.additionalContext).toContain('[[regel-a]] — Titel regel-a (decision, verified 2026-10-02)');
@@ -254,7 +255,7 @@ describe('fileContextHandler — vault notes in the gate', () => {
     setVaultNotes([note('regel-b')]);
 
     const out = (await read()).hookSpecificOutput!;
-    expect(out.permissionDecision).toBe('allow');
+    expect(out.permissionDecision).toBeUndefined(); // AK12
     expect(out.additionalContext).not.toContain('prior observations');
     expect(out.additionalContext).toBe(
       'Vault-Notizen, die diese Datei regieren:\n[[regel-b]] — Titel regel-b (decision, verified —)');

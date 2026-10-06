@@ -15,7 +15,10 @@ import { getGoverningVaultNotes, formatVaultNotes, shownVaultSlugs } from './vau
 
 const FILE_READ_GATE_MIN_BYTES = 1_500;
 
-const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit']);
+// AK12: hard upper bound for the whole (synchronous) hook handler.
+const FILE_CONTEXT_HOOK_MAX_MS = 4_000;
+
+const EDIT_TOOLS =new Set(['Edit', 'Write', 'MultiEdit']);
 
 const FETCH_LOOKAHEAD_LIMIT = 40;
 
@@ -186,10 +189,18 @@ export const fileContextHandler: EventHandler = {
         return notes;
       })
     );
+    // AK12: the Read hook is synchronous, so a hang here would block every Read.
+    // One hard ceiling for the whole handler: a late timeline is dropped (vault
+    // block still delivered), a late vault part counts as "no notes" (silent).
+    const deadline = Date.now() + FILE_CONTEXT_HOOK_MAX_MS;
     const timelineResults = timelineWanted
-      ? await Promise.allSettled(candidatePaths.map(candidatePath => buildFileContextTimeline(input, candidatePath)))
+      ? await withDeadline(
+          Promise.allSettled(candidatePaths.map(candidatePath => buildFileContextTimeline(input, candidatePath))),
+          deadline,
+          [] as PromiseSettledResult<string | null>[],
+        )
       : [];
-    const vaultBlock = formatVaultNotes((await vaultNotesPromise).flat());
+    const vaultBlock = formatVaultNotes((await withDeadline(vaultNotesPromise, deadline, [])).flat());
     const timelines: string[] = [];
 
     timelineResults.forEach((result, index) => {
@@ -213,12 +224,21 @@ export const fileContextHandler: EventHandler = {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         additionalContext: timelines.join('\n\n---\n\n'),
-        // Edit tools: a synchronous 'allow' would override the user's permission prompt.
-        ...(EDIT_TOOLS.has(input.toolName ?? '') ? {} : { permissionDecision: 'allow' as const }),
+        // No permissionDecision for any tool: both hooks are synchronous, and a
+        // synchronous 'allow' would override the user's permission prompt.
       },
     };
   },
 };
+
+/** Resolves with `fallback` once `deadline` (epoch ms) has passed; never rejects late. */
+function withDeadline<T>(p: Promise<T>, deadline: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const late = new Promise<T>(resolve => {
+    timer = setTimeout(() => resolve(fallback), Math.max(0, deadline - Date.now()));
+  });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
 
 async function buildFileContextTimeline(input: NormalizedHookInput, filePath: string): Promise<string | null> {
   let fileMtimeMs = 0;

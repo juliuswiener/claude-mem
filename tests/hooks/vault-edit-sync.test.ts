@@ -135,12 +135,13 @@ describe('AK11 vault hint before the edit', () => {
   });
 
   it('AK11 Read behält sein bisheriges Ergebnis', async () => {
+    // AK12: Read is synchronous now, so it no longer carries permissionDecision either.
     const out = (await touch()).hookSpecificOutput as any;
-    expect(out.permissionDecision).toBe('allow');
+    expect('permissionDecision' in out).toBe(false);
     expect(out.additionalContext).toContain('[[regel]]');
   });
 
-  it('AK11 hooks.json: der Eintrag Edit|Write|MultiEdit hat kein async, der Eintrag Read hat async', () => {
+  it('AK11 hooks.json: der Eintrag Edit|Write|MultiEdit hat kein async', () => {
     const entries = hooksJson().PreToolUse as any[];
     const edit = entries.find(e => e.matcher === 'Edit|Write|MultiEdit');
     const readEntry = entries.find(e => e.matcher === 'Read');
@@ -148,7 +149,7 @@ describe('AK11 vault hint before the edit', () => {
     expect(readEntry).toBeDefined();
     expect('async' in edit.hooks[0]).toBe(false);
     expect(edit.hooks[0].timeout).toBe(15);
-    expect(readEntry.hooks[0].async).toBe(true);
+    // AK12: the Read entry is synchronous as well (see vault-read-sync.test.ts).
   });
 
   it('AK11 hooks.json: beide PreToolUse-Einträge rufen dasselbe file-context-Kommando', () => {

@@ -358,7 +358,8 @@ describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
     expect(postToolUse.command).toContain('observation');
     expect(postToolUse.async).toBe(true);
     expect(preToolUse.command).toContain('file-context');
-    expect(preToolUse.async).toBe(true);
+    // AK12: the file-context hook is synchronous so the vault hint reaches the model at Read.
+    expect('async' in preToolUse).toBe(false);
     expect(stop.command).toContain('summarize');
     expect(stop.async).toBe(true);
     expect(sessionEnd.command).toContain('session-end');
