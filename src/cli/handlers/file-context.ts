@@ -10,7 +10,7 @@ import { statSync } from 'fs';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { claimFileContextInjection, claimVaultNoteDelivery } from './file-context-dedupe.js';
+import { claimFileContextInjection, claimVaultNoteDelivery, hasVaultNoteDelivery } from './file-context-dedupe.js';
 import { getGoverningVaultNotes, formatVaultNotes, shownVaultSlugs } from './vault-notes.js';
 
 const FILE_READ_GATE_MIN_BYTES = 1_500;
@@ -177,6 +177,8 @@ export const fileContextHandler: EventHandler = {
     const vaultNotesPromise = Promise.all(
       candidatePaths.map(async p => {
         const abs = path.resolve(input.cwd || process.cwd(), p);
+        // Shortcut only (~120 ms vault call); the claim below stays authoritative.
+        if (input.sessionId && hasVaultNoteDelivery(input.sessionId, input.agentId ?? '', abs)) return [];
         const notes = await getGoverningVaultNotes(abs);
         const slugs = shownVaultSlugs(notes);
         if (slugs.length === 0) return [];
@@ -211,7 +213,8 @@ export const fileContextHandler: EventHandler = {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         additionalContext: timelines.join('\n\n---\n\n'),
-        permissionDecision: 'allow',
+        // Edit tools: a synchronous 'allow' would override the user's permission prompt.
+        ...(EDIT_TOOLS.has(input.toolName ?? '') ? {} : { permissionDecision: 'allow' as const }),
       },
     };
   },

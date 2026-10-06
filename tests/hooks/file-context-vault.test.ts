@@ -174,7 +174,10 @@ describe('fileContextHandler — AK2 edit tools and AK2a silent exits', () => {
     }
     setVaultNotes([note('regel')]);
     const r = await run({ toolName: 'Edit' });
-    expect((r.hookSpecificOutput as any)?.permissionDecision).toBe('allow');
+    // AK11: no permissionDecision at all for edit tools (user's prompt stays in force).
+    expect((r.hookSpecificOutput as any)?.permissionDecision).toBeUndefined();
+    const rd = await run({});
+    expect((rd.hookSpecificOutput as any)?.permissionDecision).toBe('allow');
   });
 
   it('AK2 Edit ohne Notizen bleibt still', async () => {
@@ -224,9 +227,11 @@ describe('fileContextHandler — AK2 edit tools and AK2a silent exits', () => {
 
   it('AK2 Hook-Matcher fuer file-context traegt Read, Edit, Write, MultiEdit', () => {
     const hooks = JSON.parse(readFileSync(new URL('../../plugin/hooks/hooks.json', import.meta.url), 'utf-8')).hooks;
-    const entry = hooks.PreToolUse.find((m: any) =>
-      m.hooks.some((h: any) => h.command.includes('hook claude-code file-context')));
-    expect(entry.matcher.split('|').sort()).toEqual(['Edit', 'MultiEdit', 'Read', 'Write']);
+    // AK11: split into two entries (Read async, Edit|Write|MultiEdit sync); together they cover all four.
+    const matchers = hooks.PreToolUse
+      .filter((m: any) => m.hooks.some((h: any) => h.command.includes('hook claude-code file-context')))
+      .flatMap((m: any) => m.matcher.split('|'));
+    expect(matchers.sort()).toEqual(['Edit', 'MultiEdit', 'Read', 'Write']);
   });
 });
 

@@ -69,6 +69,11 @@ const CLAIM_VAULT_DELIVERY_SQL = `
   RETURNING 1 AS claimed
 `;
 
+const SELECT_VAULT_DELIVERY_SQL = `
+  SELECT 1 AS hit FROM vault_note_deliveries
+  WHERE session_id = ? AND agent_id = ? AND file_path = ?
+`;
+
 const DELETE_EXPIRED_VAULT_SQL = `
   DELETE FROM vault_note_deliveries WHERE delivered_at_epoch < ?
 `;
@@ -223,6 +228,23 @@ export function claimVaultNoteDelivery(
       error: describeError(err),
     });
     return true;
+  }
+}
+
+/**
+ * Read-only shortcut for the claim: was this file already delivered to
+ * (session, agent)? Only skips the vault call; the atomic claim stays
+ * authoritative. No sessionId or any DB error: `false` (ask the vault).
+ */
+export function hasVaultNoteDelivery(sessionId: string, agentId: string, absolutePath: string): boolean {
+  if (!sessionId) return false;
+  const db = openGateDb();
+  if (!db) return false;
+  try {
+    return db.query(SELECT_VAULT_DELIVERY_SQL).get(sessionId, agentId, absolutePath) != null;
+  } catch (err) {
+    logger.debug('HOOK', 'vault delivery lookup failed', { error: describeError(err) });
+    return false;
   }
 }
 
