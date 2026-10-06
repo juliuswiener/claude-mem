@@ -15,6 +15,7 @@ import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { resetVaultNoteDeliveries } from './file-context-dedupe.js';
+import { broadVaultOverview } from './vault-notes.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
@@ -160,15 +161,20 @@ export const contextHandler: EventHandler = {
     // Compaction: cut the vault-note delivery protocol and re-inject what the
     // agent had seen. Runs before every early exit below; startup/resume/clear skip it.
     const digest = input.sessionSource === 'compact' ? await resetVaultNoteDeliveries(input.sessionId) : '';
+    // Fresh session: the notes the vault declares broad for this repo. Runs beside
+    // the handler (own 3 s cap) and, like the digest, outside its early exits.
+    const overview = input.sessionSource === 'startup' || input.sessionSource === 'resume' || input.sessionSource === 'clear'
+      ? broadVaultOverview(input.cwd ?? process.cwd()) : Promise.resolve('');
     const result = await sessionStartContext.execute(input);
-    if (!digest) return result;
+    const extra = digest || await overview;
+    if (!extra) return result;
     const out = result.hookSpecificOutput;
     return {
       ...result,
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
         ...out,
-        additionalContext: out?.additionalContext ? `${out.additionalContext}\n\n${digest}` : digest,
+        additionalContext: out?.additionalContext ? `${out.additionalContext}\n\n${extra}` : extra,
       },
     };
   }

@@ -19,6 +19,9 @@ const VAULT_DIGEST_FILE_NAMES = 3;
 const CUT_MARKER = '[… gekürzt]';
 const TEXT_DELIVERED = ' — Text schon geliefert';
 const VAULT_TIMEOUT_MS = 2_000;
+const VAULT_BROAD_TIMEOUT_MS = 3_000;
+const VAULT_TYPE_DIRS = '{decisions,architecture,audits,research}'; // where a note path is built from a slug
+export const VAULT_BROAD_MAX_CHARS = 1500;
 
 export interface VaultNote {
   slug: string;
@@ -50,15 +53,16 @@ function run(cmd: string, args: string[], timeoutMs: number): Promise<string | n
   });
 }
 
+const vaultCommand = () => process.env.NORD_VAULT_CONTEXT_CMD
+  || path.join(process.env.VAULT_DIR || path.join(homedir(), '00_projects', 'vault'), 'bin', 'context');
+
 export async function getGoverningVaultNotes(absoluteFile: string): Promise<VaultNote[]> {
   try {
     const deadline = Date.now() + VAULT_TIMEOUT_MS;
     const root = (await run('git', ['-C', path.dirname(absoluteFile), 'rev-parse', '--show-toplevel'], VAULT_TIMEOUT_MS))?.trim();
     if (!root) return [];
     const rel = path.relative(root, absoluteFile).split(path.sep).join('/');
-    const cmd = process.env.NORD_VAULT_CONTEXT_CMD
-      || path.join(process.env.VAULT_DIR || path.join(homedir(), '00_projects', 'vault'), 'bin', 'context');
-    const out = await run(cmd, ['--governing', '--repo', root, rel], Math.max(1, deadline - Date.now()));
+    const out = await run(vaultCommand(), ['--governing', '--repo', root, rel], Math.max(1, deadline - Date.now()));
     if (!out) return [];
     const parsed = JSON.parse(out);
     const notes = Array.isArray(parsed) ? parsed[0]?.notes : null;
@@ -120,7 +124,7 @@ function render(notes: VaultNote[], cfg: RenderConfig = GATE_CONFIG): Rendered |
     : cfg.textChars && n.text.length > cfg.textChars
       ? `${n.text.slice(0, cfg.textChars)}\n${CUT_MARKER}` : n.text));
   const root = vaultRoot(narrow);
-  const header = cfg.header(root ? `ganze Notiz: ${root}/{decisions,architecture,audits}/<slug>.md` : '');
+  const header = cfg.header(root ? `ganze Notiz: ${root}/${VAULT_TYPE_DIRS}/<slug>.md` : '');
   let list = narrow.slice(cfg.noteLimit, cfg.noteLimit + cfg.listLimit);
   const total = narrow.length;
 
@@ -214,4 +218,84 @@ export function formatVaultDigest(files: DigestFile[]): string | null {
       return ` — gilt für ${f.length} Dateien: ${f.slice(0, VAULT_DIGEST_FILE_NAMES).join(', ')}${f.length > VAULT_DIGEST_FILE_NAMES ? ' …' : ''}`;
     },
   })?.text ?? null;
+}
+
+export interface BroadNote {
+  slug: string; title: string; type: string; section: string; text: string;
+  path: string; created: string; verified: string;
+  repo: string; // repo root the vault answered for
+}
+
+/** Notes the vault declares broad for the repo around cwd (`bin/context --broad`); every failure → []. */
+export async function getBroadVaultNotes(cwd: string): Promise<BroadNote[]> {
+  try {
+    const deadline = Date.now() + VAULT_BROAD_TIMEOUT_MS;
+    const root = (await run('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], VAULT_BROAD_TIMEOUT_MS))?.trim();
+    if (!root) return [];
+    const out = await run(vaultCommand(), ['--broad', '--repo', root], Math.max(1, deadline - Date.now()));
+    if (!out) return [];
+    const notes = JSON.parse(out)?.notes;
+    if (!Array.isArray(notes)) return [];
+    const str = (v: unknown) => (typeof v === 'string' ? v : '');
+    return notes
+      .filter(n => n && typeof n.slug === 'string' && typeof n.title === 'string')
+      .map(n => ({
+        slug: n.slug, title: n.title, type: str(n.type), section: str(n.section), text: str(n.text),
+        path: str(n.path), created: str(n.created), verified: str(n.verified), repo: root,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Broad-notes overview for session start, or null when there is nothing to say.
+ * Under VAULT_BROAD_MAX_CHARS: first the texts go (last note first), then title
+ * lines from the back (counted in "und N weitere"), last a hard cut.
+ */
+export function formatBroadNotes(notes: BroadNote[]): string | null {
+  if (notes.length === 0) return null;
+  const root = vaultRoot(notes as unknown as VaultNote[]);
+  const repo = path.basename(notes[0].repo ?? '');
+  const header = `Breite Vault-Notizen für ${repo} (gelten für das ganze Repo${root ? `; ganze Notiz: ${root}/${VAULT_TYPE_DIRS}/<slug>.md` : ''}):`;
+  const withText = notes.map(n => n.text !== '');
+  let shown = notes.length;
+  const build = () => {
+    const lines = [header];
+    notes.slice(0, shown).forEach((n, i) => {
+      lines.push(titleLine(n as unknown as VaultNote));
+      if (!withText[i]) return;
+      if (n.section && n.section !== 'Kurzfassung') lines.push(`  ${n.section}:`);
+      for (const l of n.text.split('\n')) lines.push(`    ${l}`);
+    });
+    if (shown < notes.length) lines.push(`und ${notes.length - shown} weitere`);
+    return lines.join('\n');
+  };
+  let out = build();
+  for (let i = notes.length - 1; i >= 0 && out.length > VAULT_BROAD_MAX_CHARS; i--) {
+    withText[i] = false;
+    out = build();
+  }
+  while (out.length > VAULT_BROAD_MAX_CHARS && shown > 0) {
+    shown--;
+    out = build();
+  }
+  if (out.length > VAULT_BROAD_MAX_CHARS) out = out.slice(0, VAULT_BROAD_MAX_CHARS - CUT_MARKER.length) + CUT_MARKER;
+  return out;
+}
+
+/** Session-start overview text; '' on nothing, error or after the hard 3 s cap. Never throws. */
+export async function broadVaultOverview(cwd: string): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const notes = await Promise.race([
+      getBroadVaultNotes(cwd),
+      new Promise<BroadNote[]>(resolve => { timer = setTimeout(() => resolve([]), VAULT_BROAD_TIMEOUT_MS); }),
+    ]);
+    return formatBroadNotes(notes) ?? '';
+  } catch {
+    return '';
+  } finally {
+    clearTimeout(timer);
+  }
 }

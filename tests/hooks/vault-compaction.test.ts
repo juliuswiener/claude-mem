@@ -198,7 +198,7 @@ describe('vault compaction — AK10', () => {
     expect(order).toEqual(['q', 'p', 's', 'r']); // q: 4 Dateien, p: 2, dann Gleichstand nach Vault-Ergebnis der zuletzt gelieferten Datei (d.py)
     expect(out).toContain('[[q]] — Titel q (decision, verified 2026-09-26) — gilt für 4 Dateien: d.py, c.py, b.py …');
     expect(out).toContain('[[p]] — Titel p (decision, verified 2026-09-26) — gilt für 2 Dateien: d.py, a.py');
-    expect(out).toContain('ganze Notiz: /abs/{decisions,architecture,audits}/<slug>.md');
+    expect(out).toContain('ganze Notiz: /abs/{decisions,architecture,audits,research}/<slug>.md');
     expect(out).not.toContain('Pfad:');
     expect(out).toContain('  Entschieden:\n    Text von q');
     expect(out).not.toContain('Text von r'); // vierte Notiz: nur Titelzeile

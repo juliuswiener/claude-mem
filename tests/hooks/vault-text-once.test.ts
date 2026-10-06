@@ -181,7 +181,7 @@ describe('vault text once — AK13', () => {
     const ctx = (await blockOf('a.py'))!;
     const lines = ctx.split('\n');
     expect(lines[0]).toBe(
-      `Vault-Notizen, die diese Datei regieren (ganze Notiz: ${ROOT}/{decisions,architecture,audits}/<slug>.md):`);
+      `Vault-Notizen, die diese Datei regieren (ganze Notiz: ${ROOT}/{decisions,architecture,audits,research}/<slug>.md):`);
     expect(ctx).not.toContain('Pfad:');
     expect(ctx).not.toContain('→');
     expect(count(ctx, ROOT)).toBe(1);

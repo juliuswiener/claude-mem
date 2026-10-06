@@ -676,7 +676,7 @@ const rich = (slug: string, extra: Record<string, unknown> = {}) =>
   note(slug, { path: `/abs/decisions/${slug}.md`, section: 'Entschieden', text: `Text von ${slug}`, ...extra });
 /** Pfad einer Notiz, wie ihn der Agent aus Kopfzeile und Slug bildet (Ordner decisions). */
 const builtPath = (ctx: string, slug: string) =>
-  ctx.split('\n')[0].match(/ganze Notiz: (.+)\/\{decisions,architecture,audits\}\/<slug>\.md/)![1] + `/decisions/${slug}.md`;
+  ctx.split('\n')[0].match(/ganze Notiz: (.+)\/\{decisions,architecture,audits,research\}\/<slug>\.md/)![1] + `/decisions/${slug}.md`;
 const MARK = (p: string) => `[… gekürzt, ganze Notiz: ${p}]`;
 
 describe('fileContextHandler — AK9 Notiztext im Gate', () => {
@@ -692,7 +692,7 @@ describe('fileContextHandler — AK9 Notiztext im Gate', () => {
       rich('a', { text: 'Zeile eins\nZeile zwei' }), rich('b'), rich('c'), rich('d'),
     ]);
     expect(ctx.startsWith(
-      'Vault-Notizen, die diese Datei regieren (ganze Notiz: /abs/{decisions,architecture,audits}/<slug>.md):\n' +
+      'Vault-Notizen, die diese Datei regieren (ganze Notiz: /abs/{decisions,architecture,audits,research}/<slug>.md):\n' +
       '[[a]] — Titel a (decision, verified —)\n  Entschieden:\n    Zeile eins\n    Zeile zwei\n' +
       '[[b]] — Titel b (decision, verified —)\n  Entschieden:\n    Text von b\n' +
       '[[c]] — Titel c (decision, verified —)\n  Entschieden:\n    Text von c\n' +
@@ -708,7 +708,7 @@ describe('fileContextHandler — AK9 Notiztext im Gate', () => {
 
   it('AK9 Notiz ohne Text bleibt Titelzeile', async () => {
     const ctx = await ctxOf([rich('a', { section: '', text: '' })]);
-    expect(ctx).toBe('Vault-Notizen, die diese Datei regieren (ganze Notiz: /abs/{decisions,architecture,audits}/<slug>.md):\n' + '[[a]] — Titel a (decision, verified —)');
+    expect(ctx).toBe('Vault-Notizen, die diese Datei regieren (ganze Notiz: /abs/{decisions,architecture,audits,research}/<slug>.md):\n' + '[[a]] — Titel a (decision, verified —)');
   });
 
   it('AK9 fehlende Felder path/section/text sind leer, kein Fehler', async () => {
