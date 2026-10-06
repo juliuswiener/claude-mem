@@ -302,15 +302,16 @@ describe('fileContextHandler — vault notes in the gate', () => {
     expect(strip(withEmpty)).toBe(strip(failing));
   });
 
-  it('(e) five notes: three lines plus "und 2 weitere"', async () => {
+  it('(e) five notes: three notes plus two title lines under "Weitere Notizen"', async () => {
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(noObservations());
     setVaultNotes(['n1', 'n2', 'n3', 'n4', 'n5'].map(s => note(s)));
 
     const lines = (await read()).hookSpecificOutput!.additionalContext!.split('\n');
-    expect(lines).toHaveLength(5);
+    expect(lines).toHaveLength(7);
     expect(lines[1]).toContain('[[n1]]');
     expect(lines[3]).toContain('[[n3]]');
-    expect(lines[4]).toBe('und 2 weitere');
+    expect(lines[4]).toBe('Weitere Notizen (nach Rang):');
+    expect(lines[6]).toContain('[[n5]]');
   });
 
   it('(f) broad_content notes are left out', async () => {
@@ -431,9 +432,9 @@ describe('fileContextHandler — AK4 Sitzungsprotokoll der Vault-Notizen', () =>
     }
   });
 
-  it('AK4 mehr als drei Notizen: zweiter Zugriff schweigt', async () => {
+  it('AK4 mehr als elf Notizen: zweiter Zugriff schweigt', async () => {
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(noObservations());
-    setVaultNotes(['n1', 'n2', 'n3', 'n4', 'n5'].map(s => note(s)));
+    setVaultNotes(Array.from({ length: 13 }, (_, i) => note(`n${i + 1}`)));
     expect((await at({})).hookSpecificOutput!.additionalContext).toContain('und 2 weitere');
     expect(await at({})).toEqual(silent);
   });
@@ -446,14 +447,14 @@ const blockOf = async (extra: Record<string, unknown> = {}) =>
   } as any)).hookSpecificOutput?.additionalContext;
 
 describe('fileContextHandler — AK3 Obergrenze und Rang', () => {
-  it('AK3 fünf Notizen: genau drei Zeilen plus "und 2 weitere"', async () => {
+  it('AK3 dreizehn Notizen: drei Notizen, acht Titelzeilen plus "und 2 weitere"', async () => {
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(noObservations());
-    setVaultNotes(['n1', 'n2', 'n3', 'n4', 'n5'].map(s => note(s)));
+    setVaultNotes(Array.from({ length: 13 }, (_, i) => note(`n${i + 1}`)));
     const lines = (await blockOf())!.split('\n');
-    expect(lines.filter(l => l.startsWith('[['))).toHaveLength(3);
-    expect(lines.filter(l => l.includes('[[n4]]') || l.includes('[[n5]]'))).toHaveLength(0);
+    expect(lines.filter(l => l.startsWith('[['))).toHaveLength(11);
+    expect(lines.filter(l => l.includes('[[n12]]') || l.includes('[[n13]]'))).toHaveLength(0);
     expect(lines.at(-1)).toBe('und 2 weitere');
-    expect(lines).toHaveLength(5);
+    expect(lines).toHaveLength(14); // Kopf + 3 + Überschrift + 8 + Rest
   });
 
   it('AK3 Reihenfolge des Vault-Ergebnisses bleibt erhalten (exakt vor Verzeichnis vor Wildcard)', async () => {
@@ -661,5 +662,195 @@ describe('fileContextHandler — AK7 verified ist Label, kein Filter', () => {
     const lines = (await blockOf())!.split('\n').slice(1);
     expect(lines.map(l => l.match(/^\[\[([^\]]+)\]\]/)![1])).toEqual(['a-leer', 'b-alt', 'c-neu']);
     expect(lines).toHaveLength(3);
+  });
+});
+
+const rich = (slug: string, extra: Record<string, unknown> = {}) =>
+  note(slug, { path: `/abs/${slug}.md`, section: 'Entschieden', text: `Text von ${slug}`, ...extra });
+const MARK = (p: string) => `[… gekürzt, ganze Notiz: ${p}]`;
+
+describe('fileContextHandler — AK9 Notiztext im Gate', () => {
+  const plain = (n: number, from = 1) => Array.from({ length: n }, (_, i) => rich(`w${from + i}`, { text: '' }));
+  const ctxOf = async (notes: unknown[], extra: Record<string, unknown> = {}) => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(noObservations());
+    setVaultNotes(notes);
+    return (await blockOf(extra))!;
+  };
+
+  it('AK9 die ersten drei Notizen tragen Pfad und Entschieden-Text', async () => {
+    const ctx = await ctxOf([
+      rich('a', { text: 'Zeile eins\nZeile zwei' }), rich('b'), rich('c'), rich('d'),
+    ]);
+    expect(ctx.startsWith(
+      'Vault-Notizen, die diese Datei regieren:\n' +
+      '[[a]] — Titel a (decision, verified —)\n  Pfad: /abs/a.md\n  Entschieden:\n    Zeile eins\n    Zeile zwei\n' +
+      '[[b]] — Titel b (decision, verified —)\n  Pfad: /abs/b.md\n  Entschieden:\n    Text von b\n' +
+      '[[c]] — Titel c (decision, verified —)\n  Pfad: /abs/c.md\n  Entschieden:\n    Text von c\n' +
+      'Weitere Notizen (nach Rang):\n[[d]] — Titel d (decision, verified —) → /abs/d.md')).toBe(true);
+    expect(ctx).not.toContain('Text von d');
+  });
+
+  it('AK9 Fallback Worum es geht wird als solcher überschrieben', async () => {
+    const ctx = await ctxOf([rich('a', { section: 'Worum es geht', text: 'Kurzfassung' })]);
+    expect(ctx).toContain('  Worum es geht:\n    Kurzfassung');
+    expect(ctx).not.toContain('Entschieden:');
+  });
+
+  it('AK9 Notiz ohne Text bleibt Titel und Pfad', async () => {
+    const ctx = await ctxOf([rich('a', { section: '', text: '' })]);
+    expect(ctx).toBe('Vault-Notizen, die diese Datei regieren:\n[[a]] — Titel a (decision, verified —)\n  Pfad: /abs/a.md');
+  });
+
+  it('AK9 fehlende Felder path/section/text sind leer, kein Fehler', async () => {
+    expect(await ctxOf([note('a')])).toBe(VAULT_BLOCK.replaceAll('regel', 'a'));
+  });
+
+  it('AK9 weitere Notizen erscheinen als Titelzeilen bis 8, danach und N weitere', async () => {
+    const ctx = await ctxOf([rich('a'), rich('b'), rich('c'), ...plain(10, 4)]);
+    const lines = ctx.split('\n');
+    const at = lines.indexOf('Weitere Notizen (nach Rang):');
+    expect(lines.slice(at + 1, -1)).toEqual(
+      Array.from({ length: 8 }, (_, i) => `[[w${i + 4}]] — Titel w${i + 4} (decision, verified —) → /abs/w${i + 4}.md`));
+    expect(lines.at(-1)).toBe('und 2 weitere');
+    expect(ctx).not.toContain('[[w12]]');
+  });
+
+  it('AK9 genau elf Notizen: kein und N weitere; drei: kein Block Weitere Notizen', async () => {
+    expect(await ctxOf([rich('a'), rich('b'), rich('c'), ...plain(8, 4)])).not.toContain('weitere');
+    fetchSpy!.mockRestore();
+    expect(await ctxOf([rich('a'), rich('b'), rich('c')])).not.toContain('Weitere');
+  });
+
+  it('AK9 Gesamttext überschreitet nie 9000 Zeichen: zuerst dritte, dann zweite, dann erste Notiz', async () => {
+    const big = (c: string, n: number) => c.repeat(n);
+    // 3 x 6000 + 12 weitere: dritter Text fällt ganz, zweiter wird gekürzt, erster bleibt.
+    let ctx = await ctxOf([
+      rich('a', { text: big('A', 6000) }), rich('b', { text: big('B', 6000) }), rich('c', { text: big('C', 6000) }),
+      ...plain(12, 4),
+    ]);
+    expect(ctx.length).toBeLessThanOrEqual(9000);
+    expect(ctx).toContain(big('A', 6000));
+    expect(ctx).not.toContain('C');                               // dritter Text ganz weg ...
+    expect(ctx).toContain('[[c]] — Titel c (decision, verified —)\n  Pfad: /abs/c.md'); // ... Titel und Pfad bleiben
+    expect(ctx.match(/B/g)!.length).toBeGreaterThan(0);
+    expect(ctx.match(/B/g)!.length).toBeLessThan(6000);           // zweiter nur gekürzt
+    expect(ctx).toContain('[[w11]]');                             // alle acht Titelzeilen bleiben
+    expect(ctx).toContain('und 4 weitere');
+    fetchSpy!.mockRestore();
+
+    // Nur die dritte Notiz überschreitet: erste und zweite bleiben ganz.
+    ctx = await ctxOf([
+      rich('a', { text: big('A', 3000) }), rich('b', { text: big('B', 3000) }), rich('c', { text: big('C', 4000) }),
+    ]);
+    expect(ctx.length).toBeLessThanOrEqual(9000);
+    expect(ctx).toContain(big('A', 3000));
+    expect(ctx).toContain(big('B', 3000));
+    expect(ctx).not.toContain(big('C', 4000));
+    expect(ctx).toContain('C');
+    fetchSpy!.mockRestore();
+
+    // Der erste Text allein ist zu groß: zweiter und dritter fallen, der erste wird gekürzt.
+    ctx = await ctxOf([
+      rich('a', { text: big('A', 20000) }), rich('b', { text: big('B', 500) }), rich('c', { text: big('C', 500) }),
+      ...plain(8, 4),
+    ]);
+    expect(ctx.length).toBeLessThanOrEqual(9000);
+    expect(ctx).not.toContain('B');
+    expect(ctx).not.toContain('C');
+    expect(ctx).toContain('Pfad: /abs/b.md');
+    expect(ctx.match(/A/g)!.length).toBeGreaterThan(1000);
+    expect(ctx).toContain('[[w11]]');
+    fetchSpy!.mockRestore();
+
+    // Titelzeilen sind das Letzte: lange Titel, kein Text. Zeilen fallen von hinten, Rest zählt in "und N weitere".
+    const longTitle = 'T'.repeat(1500);
+    ctx = await ctxOf([
+      rich('a', { text: big('A', 1000) }), rich('b'), rich('c'),
+      ...Array.from({ length: 12 }, (_, i) => rich(`w${i + 4}`, { title: longTitle, text: '' })),
+    ]);
+    expect(ctx.length).toBeLessThanOrEqual(9000);
+    expect(ctx).not.toContain('Entschieden:');                    // Texte zuerst weg
+    expect(ctx).toContain('[[w4]]');
+    expect(ctx).not.toContain('[[w11]]');                         // hinten fallen Titelzeilen
+    const shown = ctx.split('\n').filter(l => /^\[\[w\d+\]\]/.test(l)).length;
+    expect(ctx.split('\n').at(-1)).toBe(`und ${12 - shown} weitere`);
+    expect(shown).toBeLessThan(8);
+  });
+
+  it('AK9 harte Kürzung mit Marker, wenn Titel und Pfade allein zu lang sind', async () => {
+    const ctx = await ctxOf([rich('a', { title: 'T'.repeat(12000), text: '' }), rich('b')]);
+    expect(ctx.length).toBeLessThanOrEqual(9000);
+    expect(ctx).toContain('[… gekürzt');
+  });
+
+  it('AK9 Kürzungsmarker des Vaults bleibt erhalten', async () => {
+    const text = `Anfang\n${MARK('/abs/a.md')}`;
+    const ctx = await ctxOf([rich('a', { text })]);
+    expect(ctx).toContain(`    Anfang\n    ${MARK('/abs/a.md')}`);
+  });
+
+  it('AK9 Attrappe: Pfad existiert und Text steht im Block', async () => {
+    const noteFile = join(tmpDir, 'attrappe-notiz.md');
+    writeFileSync(noteFile, '# Notiz\n');
+    const ctx = await ctxOf([rich('a', { path: noteFile, text: 'ATTRAPPEN-TEXT' })]);
+    const p = ctx.match(/Pfad: (.+)/)![1];
+    expect(existsSync(p)).toBe(true);
+    expect(ctx).toContain('    ATTRAPPEN-TEXT');
+  });
+
+  it('AK9 Protokoll speichert nur Slugs, keinen Text und keinen Pfad', async () => {
+    const notes = [rich('a', { text: 'GEHEIMER-TEXT-9' }), rich('b'), rich('c'), ...plain(10, 4)];
+    await ctxOf(notes);
+    const db = new Database(join(tmpDir, 'data', 'claude-mem.db'), { readonly: true });
+    const rows = db.query('SELECT * FROM vault_note_deliveries').all() as any[];
+    db.close();
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].slugs)).toEqual(['a', 'b', 'c', ...Array.from({ length: 8 }, (_, i) => `w${i + 4}`)]);
+    const dump = JSON.stringify(rows);
+    for (const secret of ['GEHEIMER-TEXT-9', '/abs', 'Titel', 'Entschieden']) expect(dump).not.toContain(secret);
+  });
+
+  it('AK9 zweiter Zugriff schweigt weiter', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(noObservations());
+    setVaultNotes([rich('a')]);
+    const at = () => fileContextHandler.execute({
+      sessionId: 'ak9', cwd: tmpDir, toolName: 'Read', toolInput: { file_path: testFile },
+    } as any);
+    expect((await at()).hookSpecificOutput!.additionalContext).toContain('Pfad: /abs/a.md');
+    expect(await at()).toEqual({ continue: true, suppressOutput: true });
+  });
+
+  it('AK9 Edit liefert dieselbe Form wie Read', async () => {
+    const notes = [rich('a'), rich('b'), ...plain(4, 3)];
+    const viaRead = await ctxOf(notes);
+    fetchSpy!.mockRestore();
+    const viaEdit = await ctxOf(notes, { toolName: 'Edit' });
+    expect(viaEdit).toBe(viaRead);
+    expect(viaEdit).toContain('  Pfad: /abs/a.md\n  Entschieden:\n    Text von a');
+    const r = await fileContextHandler.execute({
+      sessionId: 'x', cwd: tmpDir, toolName: 'Edit', toolInput: { file_path: testFile },
+    } as any);
+    expect((r.hookSpecificOutput as any).permissionDecision).not.toBe('deny');
+  });
+
+  const realE2E = it.skipIf(!existsSync(REAL_CONTEXT));
+  realE2E('AK9 Ende-zu-Ende gegen den echten bin/context: Pfad existiert und Text steht im Block', async () => {
+    const vaultDir = mkdtempSync(join(tmpdir(), 'file-context-vault-fake-vault-'));
+    const prevVaultDir = process.env.VAULT_DIR;
+    try {
+      mkdirSync(join(vaultDir, 'decisions'), { recursive: true });
+      writeFileSync(join(vaultDir, 'decisions', 'aktiv.md'),
+        `---\ntitle: "Aktive Entscheidung"\ncreated: 2026-10-01\nrepo: "${tmpDir}"\napplies_to: ["test.md"]\nverified: "2026-09-26"\n---\n\n# Aktive Entscheidung\n\n## Entschieden\n\nE2E-ENTSCHEIDUNGSTEXT-4711\n`);
+      process.env.VAULT_DIR = vaultDir;
+      process.env.NORD_VAULT_CONTEXT_CMD = REAL_CONTEXT;
+      fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(noObservations());
+      const ctx = (await blockOf())!;
+      const p = ctx.match(/Pfad: (.+)/)![1];
+      expect(existsSync(p)).toBe(true);
+      expect(ctx).toContain('E2E-ENTSCHEIDUNGSTEXT-4711');
+    } finally {
+      if (prevVaultDir === undefined) delete process.env.VAULT_DIR; else process.env.VAULT_DIR = prevVaultDir;
+      try { rmSync(vaultDir, { recursive: true, force: true }); } catch {}
+    }
   });
 });
