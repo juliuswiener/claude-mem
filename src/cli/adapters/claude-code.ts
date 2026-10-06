@@ -29,6 +29,7 @@ export const claudeCodeAdapter: PlatformAdapter = {
       toolUseId: typeof r.tool_use_id === 'string' ? r.tool_use_id : undefined,
       transcriptPath: r.transcript_path,
       reason: pickStringField(r.reason),
+      sessionSource: ['startup', 'resume', 'clear', 'compact'].includes(r.source) ? r.source : undefined,
       agentId: pickAgentField(r.agent_id),
       agentType: pickAgentField(r.agent_type),
     };

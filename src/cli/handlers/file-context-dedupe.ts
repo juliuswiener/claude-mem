@@ -25,6 +25,7 @@ import { dirname } from 'path';
 import { resolveDbPath } from '../../shared/paths.js';
 import { applySqliteConnectionPragmas } from '../../services/sqlite/connection.js';
 import { logger } from '../../utils/logger.js';
+import { getGoverningVaultNotes, formatVaultDigest, type DigestFile } from './vault-notes.js';
 
 const GATE_TABLE_DDL = `
   CREATE TABLE IF NOT EXISTS file_context_injections (
@@ -71,6 +72,18 @@ const CLAIM_VAULT_DELIVERY_SQL = `
 const DELETE_EXPIRED_VAULT_SQL = `
   DELETE FROM vault_note_deliveries WHERE delivered_at_epoch < ?
 `;
+
+const SELECT_MAIN_DELIVERIES_SQL = `
+  SELECT file_path, slugs FROM vault_note_deliveries
+  WHERE session_id = ? AND agent_id = ''
+  ORDER BY delivered_at_epoch DESC, rowid DESC LIMIT ?
+`;
+
+const DELETE_MAIN_DELIVERIES_SQL = `
+  DELETE FROM vault_note_deliveries WHERE session_id = ? AND agent_id = ''
+`;
+
+const DIGEST_WORKING_SET = 10; // most recently delivered files
 
 const CLAIM_GATE_SQL = `
   INSERT INTO file_context_injections
@@ -210,5 +223,39 @@ export function claimVaultNoteDelivery(
       error: describeError(err),
     });
     return true;
+  }
+}
+
+/**
+ * Compaction cut: the main session (agent_id '') forgets what it was delivered,
+ * because the agent no longer has it in context. Other sessions and subagents
+ * keep their rows. Returns a digest of the notes the agent had seen (the most
+ * recently delivered files), or '' — the cut happens either way and no vault
+ * failure escapes. Stores nothing; the digest is only returned.
+ */
+export async function resetVaultNoteDeliveries(sessionId: string): Promise<string> {
+  if (!sessionId) return '';
+  const db = openGateDb();
+  if (!db) return '';
+
+  let delivered: { file_path: string; slugs: string }[];
+  try {
+    delivered = db.query(SELECT_MAIN_DELIVERIES_SQL).all(sessionId, DIGEST_WORKING_SET) as typeof delivered;
+    db.query(DELETE_MAIN_DELIVERIES_SQL).run(sessionId);
+  } catch (err) {
+    logger.debug('HOOK', 'vault delivery reset failed', { error: describeError(err) });
+    return '';
+  }
+
+  try {
+    const files: DigestFile[] = await Promise.all(delivered.map(async row => ({
+      file: row.file_path,
+      notes: await getGoverningVaultNotes(row.file_path),
+      seen: JSON.parse(row.slugs) as string[],
+    })));
+    return formatVaultDigest(files) ?? '';
+  } catch (err) {
+    logger.debug('HOOK', 'vault digest failed', { error: describeError(err) });
+    return '';
   }
 }

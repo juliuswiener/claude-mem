@@ -21,7 +21,7 @@ export interface NormalizedHookInput {
   stopHookActive?: boolean;
   permissionMode?: string;
   model?: string;
-  sessionSource?: 'startup' | 'resume' | 'clear';
+  sessionSource?: 'startup' | 'resume' | 'clear' | 'compact';
   filePath?: string;
   edits?: unknown[];
   agentId?: string;

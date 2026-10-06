@@ -11,6 +11,11 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 export const VAULT_NOTE_LIMIT = 3; // notes delivered with text
 export const VAULT_LIST_LIMIT = 8; // further notes delivered as title lines
 export const VAULT_BLOCK_MAX_CHARS = 9000;
+export const VAULT_DIGEST_MAX_CHARS = 8000;
+export const VAULT_DIGEST_TEXT_NOTES = 3; // digest: notes delivered with text
+export const VAULT_DIGEST_TEXT_CHARS = 700;
+export const VAULT_DIGEST_LIST_LIMIT = 8;
+const VAULT_DIGEST_FILE_NAMES = 3;
 const CUT_MARKER = '[… gekürzt]';
 const VAULT_TIMEOUT_MS = 2_000;
 
@@ -79,19 +84,38 @@ const titleLine = (n: VaultNote) => `[[${n.slug}]] — ${n.title} (${n.type}, ve
 
 interface Rendered { text: string; slugs: string[] }
 
-/** Builds the block under VAULT_BLOCK_MAX_CHARS; slugs = every note that stands in it. */
-function render(notes: VaultNote[]): Rendered | null {
+interface RenderConfig {
+  header: string;
+  listHeader: string;
+  maxChars: number;
+  noteLimit: number;
+  listLimit: number;
+  textChars?: number; // cut each note text to this length (with marker) before the global fit
+  suffix?: (n: VaultNote) => string; // appended to the title line of a note with text
+}
+
+const GATE_CONFIG: RenderConfig = {
+  header: 'Vault-Notizen, die diese Datei regieren:',
+  listHeader: 'Weitere Notizen (nach Rang):',
+  maxChars: VAULT_BLOCK_MAX_CHARS,
+  noteLimit: VAULT_NOTE_LIMIT,
+  listLimit: VAULT_LIST_LIMIT,
+};
+
+/** Builds the block under cfg.maxChars; slugs = every note that stands in it. */
+function render(notes: VaultNote[], cfg: RenderConfig = GATE_CONFIG): Rendered | null {
   const narrow = narrowNotes(notes);
   if (narrow.length === 0) return null;
-  const head = narrow.slice(0, VAULT_NOTE_LIMIT);
-  const texts = head.map(n => n.text);
-  let list = narrow.slice(VAULT_NOTE_LIMIT, VAULT_NOTE_LIMIT + VAULT_LIST_LIMIT);
+  const head = narrow.slice(0, cfg.noteLimit);
+  const texts = head.map(n => (cfg.textChars && n.text.length > cfg.textChars
+    ? `${n.text.slice(0, cfg.textChars)}\n${CUT_MARKER}` : n.text));
+  let list = narrow.slice(cfg.noteLimit, cfg.noteLimit + cfg.listLimit);
   const total = narrow.length;
 
   const build = () => {
-    const lines = ['Vault-Notizen, die diese Datei regieren:'];
+    const lines = [cfg.header];
     head.forEach((n, i) => {
-      lines.push(titleLine(n));
+      lines.push(titleLine(n) + (cfg.suffix?.(n) ?? ''));
       if (n.path) lines.push(`  Pfad: ${n.path}`);
       if (texts[i]) {
         if (n.section) lines.push(`  ${n.section}:`);
@@ -99,7 +123,7 @@ function render(notes: VaultNote[]): Rendered | null {
       }
     });
     if (list.length > 0) {
-      lines.push('Weitere Notizen (nach Rang):');
+      lines.push(cfg.listHeader);
       for (const n of list) lines.push(titleLine(n) + (n.path ? ` → ${n.path}` : ''));
     }
     const rest = total - head.length - list.length;
@@ -110,23 +134,23 @@ function render(notes: VaultNote[]): Rendered | null {
   let out = build();
   // 1. texts: third, second, first note (title and path line stay).
   // The cut shrinks until the block fits; indent and marker add to the length, so one pass is not exact.
-  for (let i = head.length - 1; i >= 0 && out.length > VAULT_BLOCK_MAX_CHARS; i--) {
+  for (let i = head.length - 1; i >= 0 && out.length > cfg.maxChars; i--) {
     const full = texts[i];
     let keep = full.length;
-    while (out.length > VAULT_BLOCK_MAX_CHARS && keep > 0) {
-      keep = Math.max(0, keep - (out.length - VAULT_BLOCK_MAX_CHARS) - CUT_MARKER.length - 5);
+    while (out.length > cfg.maxChars && keep > 0) {
+      keep = Math.max(0, keep - (out.length - cfg.maxChars) - CUT_MARKER.length - 5);
       texts[i] = keep > 0 ? `${full.slice(0, keep)}\n${CUT_MARKER}` : '';
       out = build();
     }
   }
   // 2. title lines of the further notes, from the back (rest counts in "und N weitere")
-  while (out.length > VAULT_BLOCK_MAX_CHARS && list.length > 0) {
+  while (out.length > cfg.maxChars && list.length > 0) {
     list = list.slice(0, -1);
     out = build();
   }
   const slugs = [...head, ...list].map(n => n.slug);
   // 3. last resort: hard cut
-  if (out.length > VAULT_BLOCK_MAX_CHARS) out = out.slice(0, VAULT_BLOCK_MAX_CHARS - CUT_MARKER.length) + CUT_MARKER;
+  if (out.length > cfg.maxChars) out = out.slice(0, cfg.maxChars - CUT_MARKER.length) + CUT_MARKER;
   return { text: out, slugs };
 }
 
@@ -138,4 +162,36 @@ export function shownVaultSlugs(notes: VaultNote[]): string[] {
 /** Format notes as a text block, or null when nothing (non-broad) is left. */
 export function formatVaultNotes(notes: VaultNote[]): string | null {
   return render(notes)?.text ?? null;
+}
+
+export interface DigestFile { file: string; notes: VaultNote[]; seen: string[] }
+
+/**
+ * Digest of the notes the agent saw, merged over the working set by slug.
+ * Rank: number of files the note governs (desc), then vault order. null = nothing to say.
+ */
+export function formatVaultDigest(files: DigestFile[]): string | null {
+  const merged = new Map<string, { note: VaultNote; files: string[] }>();
+  for (const { file, notes, seen } of files) {
+    for (const n of narrowNotes(notes)) {
+      if (!seen.includes(n.slug)) continue;
+      const e = merged.get(n.slug);
+      if (e) e.files.push(path.basename(file));
+      else merged.set(n.slug, { note: n, files: [path.basename(file)] });
+    }
+  }
+  const ranked = [...merged.values()].sort((a, b) => b.files.length - a.files.length); // stable
+  const filesOf = new Map(ranked.map(e => [e.note.slug, e.files]));
+  return render(ranked.map(e => e.note), {
+    header: 'Vault-Notizen aus der bisherigen Arbeit (die Sitzung wurde kompaktiert; das Gate liefert sie beim nächsten Berühren einer Datei erneut):',
+    listHeader: 'Weitere:',
+    maxChars: VAULT_DIGEST_MAX_CHARS,
+    noteLimit: VAULT_DIGEST_TEXT_NOTES,
+    listLimit: VAULT_DIGEST_LIST_LIMIT,
+    textChars: VAULT_DIGEST_TEXT_CHARS,
+    suffix: n => {
+      const f = filesOf.get(n.slug)!;
+      return ` — gilt für ${f.length} Dateien: ${f.slice(0, VAULT_DIGEST_FILE_NAMES).join(', ')}${f.length > VAULT_DIGEST_FILE_NAMES ? ' …' : ''}`;
+    },
+  })?.text ?? null;
 }
