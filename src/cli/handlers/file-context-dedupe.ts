@@ -62,6 +62,33 @@ const VAULT_DELIVERY_DDL = `
   )
 `;
 
+// Note-text protocol: which notes' TEXT (not just title) this (session, agent)
+// already received. Slugs only, same rules as above.
+const VAULT_TEXT_DDL = `
+  CREATE TABLE IF NOT EXISTS vault_note_texts (
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    delivered_at_epoch INTEGER NOT NULL,
+    PRIMARY KEY (session_id, agent_id, slug)
+  )
+`;
+
+const CLAIM_VAULT_TEXT_SQL = `
+  INSERT INTO vault_note_texts (session_id, agent_id, slug, delivered_at_epoch)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(session_id, agent_id, slug) DO NOTHING
+  RETURNING 1 AS claimed
+`;
+
+const DELETE_EXPIRED_VAULT_TEXT_SQL = `
+  DELETE FROM vault_note_texts WHERE delivered_at_epoch < ?
+`;
+
+const DELETE_MAIN_TEXTS_SQL = `
+  DELETE FROM vault_note_texts WHERE session_id = ? AND agent_id = ''
+`;
+
 const CLAIM_VAULT_DELIVERY_SQL = `
   INSERT INTO vault_note_deliveries (session_id, agent_id, file_path, slugs, delivered_at_epoch)
   VALUES (?, ?, ?, ?, ?)
@@ -146,6 +173,7 @@ function openGateDb(): Database | null {
     applySqliteConnectionPragmas(opened);
     opened.run(GATE_TABLE_DDL);
     opened.run(VAULT_DELIVERY_DDL);
+    opened.run(VAULT_TEXT_DDL);
     cachedGateDb = { path: dbPath, db: opened };
     return cachedGateDb.db;
   } catch (err) {
@@ -221,10 +249,31 @@ export function claimVaultNoteDelivery(
   try {
     const now = Date.now();
     db.query(DELETE_EXPIRED_VAULT_SQL).run(now - GATE_ROW_TTL_MS);
+    db.query(DELETE_EXPIRED_VAULT_TEXT_SQL).run(now - GATE_ROW_TTL_MS);
     return db.query(CLAIM_VAULT_DELIVERY_SQL)
       .get(sessionId, agentId, absolutePath, JSON.stringify(slugs), now) != null;
   } catch (err) {
     logger.debug('HOOK', 'vault delivery claim failed, delivering without dedupe', {
+      error: describeError(err),
+    });
+    return true;
+  }
+}
+
+/**
+ * Atomically claim the right to deliver the TEXT of one note to
+ * (session, agent). `true` = this caller delivers the text; `false` = the
+ * agent already has it. Fails open (no sessionId, DB error: `true`). Call it
+ * only after winning claimVaultNoteDelivery, so a losing instance sets nothing.
+ */
+export function claimVaultNoteText(sessionId: string, agentId: string, slug: string): boolean {
+  if (!sessionId) return true;
+  const db = openGateDb();
+  if (!db) return true;
+  try {
+    return db.query(CLAIM_VAULT_TEXT_SQL).get(sessionId, agentId, slug, Date.now()) != null;
+  } catch (err) {
+    logger.debug('HOOK', 'vault text claim failed, delivering text without dedupe', {
       error: describeError(err),
     });
     return true;
@@ -264,6 +313,7 @@ export async function resetVaultNoteDeliveries(sessionId: string): Promise<strin
   try {
     delivered = db.query(SELECT_MAIN_DELIVERIES_SQL).all(sessionId, DIGEST_WORKING_SET) as typeof delivered;
     db.query(DELETE_MAIN_DELIVERIES_SQL).run(sessionId);
+    db.query(DELETE_MAIN_TEXTS_SQL).run(sessionId); // the agent lost the texts too
   } catch (err) {
     logger.debug('HOOK', 'vault delivery reset failed', { error: describeError(err) });
     return '';

@@ -368,7 +368,8 @@ describe('fileContextHandler — AK4 Sitzungsprotokoll der Vault-Notizen', () =>
     const other = join(tmpDir, 'other.md');
     writeFileSync(other, PADDING);
     await at({});
-    expect((await at({}, other)).hookSpecificOutput!.additionalContext).toBe(VAULT_BLOCK);
+    // AK13: dieselbe Notiz, zweite Datei: Titelzeile mit Zusatz statt Text.
+    expect((await at({}, other)).hookSpecificOutput!.additionalContext).toBe(`${VAULT_BLOCK} — Text schon geliefert`);
   });
 
   it('AK4 andere Sitzung liefert wieder', async () => {
@@ -536,7 +537,7 @@ describe('fileContextHandler — AK5/AK6 mit Vault-Attrappe', () => {
     let dump = '';
     for (const t of tables) dump += JSON.stringify(db.query(`SELECT * FROM "${t}"`).all());
     db.close();
-    expect(tables).toEqual(['file_context_injections', 'vault_note_deliveries']); // vorher nur die Timeline-Tabelle
+    expect(tables).toEqual(['file_context_injections', 'vault_note_deliveries', 'vault_note_texts']); // vorher nur die Timeline-Tabelle
     expect(dump).toContain('regel');
     expect(dump).not.toContain('GEHEIMER-TITEL');
   });
@@ -633,8 +634,8 @@ describe('fileContextHandler — AK5/AK6 gegen den echten Vault-Befehl', () => {
 
     expect(await blockOf({ sessionId: 'ak6' })).toContain('[[aktiv]]');
     const after = tables();
-    expect(after.filter(t => !before.includes(t))).toEqual(['vault_note_deliveries']);
-    expect(after.sort()).toEqual([...before, 'vault_note_deliveries'].sort());
+    expect(after.filter(t => !before.includes(t)).sort()).toEqual(['vault_note_deliveries', 'vault_note_texts']);
+    expect(after.sort()).toEqual([...before, 'vault_note_deliveries', 'vault_note_texts'].sort());
 
     const db = new Database(dbPath, { readonly: true });
     let dump = '';
@@ -672,7 +673,10 @@ describe('fileContextHandler — AK7 verified ist Label, kein Filter', () => {
 });
 
 const rich = (slug: string, extra: Record<string, unknown> = {}) =>
-  note(slug, { path: `/abs/${slug}.md`, section: 'Entschieden', text: `Text von ${slug}`, ...extra });
+  note(slug, { path: `/abs/decisions/${slug}.md`, section: 'Entschieden', text: `Text von ${slug}`, ...extra });
+/** Pfad einer Notiz, wie ihn der Agent aus Kopfzeile und Slug bildet (Ordner decisions). */
+const builtPath = (ctx: string, slug: string) =>
+  ctx.split('\n')[0].match(/ganze Notiz: (.+)\/\{decisions,architecture,audits\}\/<slug>\.md/)![1] + `/decisions/${slug}.md`;
 const MARK = (p: string) => `[… gekürzt, ganze Notiz: ${p}]`;
 
 describe('fileContextHandler — AK9 Notiztext im Gate', () => {
@@ -683,16 +687,16 @@ describe('fileContextHandler — AK9 Notiztext im Gate', () => {
     return (await blockOf(extra))!;
   };
 
-  it('AK9 die ersten drei Notizen tragen Pfad und Entschieden-Text', async () => {
+  it('AK9 die ersten drei Notizen tragen Entschieden-Text, der Pfad steht im Kopf', async () => {
     const ctx = await ctxOf([
       rich('a', { text: 'Zeile eins\nZeile zwei' }), rich('b'), rich('c'), rich('d'),
     ]);
     expect(ctx.startsWith(
-      'Vault-Notizen, die diese Datei regieren:\n' +
-      '[[a]] — Titel a (decision, verified —)\n  Pfad: /abs/a.md\n  Entschieden:\n    Zeile eins\n    Zeile zwei\n' +
-      '[[b]] — Titel b (decision, verified —)\n  Pfad: /abs/b.md\n  Entschieden:\n    Text von b\n' +
-      '[[c]] — Titel c (decision, verified —)\n  Pfad: /abs/c.md\n  Entschieden:\n    Text von c\n' +
-      'Weitere Notizen (nach Rang):\n[[d]] — Titel d (decision, verified —) → /abs/d.md')).toBe(true);
+      'Vault-Notizen, die diese Datei regieren (ganze Notiz: /abs/{decisions,architecture,audits}/<slug>.md):\n' +
+      '[[a]] — Titel a (decision, verified —)\n  Entschieden:\n    Zeile eins\n    Zeile zwei\n' +
+      '[[b]] — Titel b (decision, verified —)\n  Entschieden:\n    Text von b\n' +
+      '[[c]] — Titel c (decision, verified —)\n  Entschieden:\n    Text von c\n' +
+      'Weitere Notizen (nach Rang):\n[[d]] — Titel d (decision, verified —)')).toBe(true);
     expect(ctx).not.toContain('Text von d');
   });
 
@@ -702,9 +706,9 @@ describe('fileContextHandler — AK9 Notiztext im Gate', () => {
     expect(ctx).not.toContain('Entschieden:');
   });
 
-  it('AK9 Notiz ohne Text bleibt Titel und Pfad', async () => {
+  it('AK9 Notiz ohne Text bleibt Titelzeile', async () => {
     const ctx = await ctxOf([rich('a', { section: '', text: '' })]);
-    expect(ctx).toBe('Vault-Notizen, die diese Datei regieren:\n[[a]] — Titel a (decision, verified —)\n  Pfad: /abs/a.md');
+    expect(ctx).toBe('Vault-Notizen, die diese Datei regieren (ganze Notiz: /abs/{decisions,architecture,audits}/<slug>.md):\n' + '[[a]] — Titel a (decision, verified —)');
   });
 
   it('AK9 fehlende Felder path/section/text sind leer, kein Fehler', async () => {
@@ -716,7 +720,7 @@ describe('fileContextHandler — AK9 Notiztext im Gate', () => {
     const lines = ctx.split('\n');
     const at = lines.indexOf('Weitere Notizen (nach Rang):');
     expect(lines.slice(at + 1, -1)).toEqual(
-      Array.from({ length: 8 }, (_, i) => `[[w${i + 4}]] — Titel w${i + 4} (decision, verified —) → /abs/w${i + 4}.md`));
+      Array.from({ length: 8 }, (_, i) => `[[w${i + 4}]] — Titel w${i + 4} (decision, verified —)`));
     expect(lines.at(-1)).toBe('und 2 weitere');
     expect(ctx).not.toContain('[[w12]]');
   });
@@ -737,7 +741,7 @@ describe('fileContextHandler — AK9 Notiztext im Gate', () => {
     expect(ctx.length).toBeLessThanOrEqual(9000);
     expect(ctx).toContain(big('A', 6000));
     expect(ctx).not.toContain('C');                               // dritter Text ganz weg ...
-    expect(ctx).toContain('[[c]] — Titel c (decision, verified —)\n  Pfad: /abs/c.md'); // ... Titel und Pfad bleiben
+    expect(ctx).toContain('[[c]] — Titel c (decision, verified —)'); // ... die Titelzeile bleibt
     expect(ctx.match(/B/g)!.length).toBeGreaterThan(0);
     expect(ctx.match(/B/g)!.length).toBeLessThan(6000);           // zweiter nur gekürzt
     expect(ctx).toContain('[[w11]]');                             // alle acht Titelzeilen bleiben
@@ -763,7 +767,7 @@ describe('fileContextHandler — AK9 Notiztext im Gate', () => {
     expect(ctx.length).toBeLessThanOrEqual(9000);
     expect(ctx).not.toContain('B');
     expect(ctx).not.toContain('C');
-    expect(ctx).toContain('Pfad: /abs/b.md');
+    expect(ctx).toContain('[[b]] — Titel b (decision, verified —)');
     expect(ctx.match(/A/g)!.length).toBeGreaterThan(1000);
     expect(ctx).toContain('[[w11]]');
     fetchSpy!.mockRestore();
@@ -783,7 +787,7 @@ describe('fileContextHandler — AK9 Notiztext im Gate', () => {
     expect(shown).toBeLessThan(8);
   });
 
-  it('AK9 harte Kürzung mit Marker, wenn Titel und Pfade allein zu lang sind', async () => {
+  it('AK9 harte Kürzung mit Marker, wenn die Titelzeilen allein zu lang sind', async () => {
     const ctx = await ctxOf([rich('a', { title: 'T'.repeat(12000), text: '' }), rich('b')]);
     expect(ctx.length).toBeLessThanOrEqual(9000);
     expect(ctx).toContain('[… gekürzt');
@@ -795,12 +799,11 @@ describe('fileContextHandler — AK9 Notiztext im Gate', () => {
     expect(ctx).toContain(`    Anfang\n    ${MARK('/abs/a.md')}`);
   });
 
-  it('AK9 Attrappe: Pfad existiert und Text steht im Block', async () => {
-    const noteFile = join(tmpDir, 'attrappe-notiz.md');
-    writeFileSync(noteFile, '# Notiz\n');
-    const ctx = await ctxOf([rich('a', { path: noteFile, text: 'ATTRAPPEN-TEXT' })]);
-    const p = ctx.match(/Pfad: (.+)/)![1];
-    expect(existsSync(p)).toBe(true);
+  it('AK9 Attrappe: der aus Kopf und Slug gebildete Pfad existiert und Text steht im Block', async () => {
+    mkdirSync(join(tmpDir, 'decisions'), { recursive: true });
+    writeFileSync(join(tmpDir, 'decisions', 'a.md'), '# Notiz\n');
+    const ctx = await ctxOf([rich('a', { path: join(tmpDir, 'decisions', 'a.md'), text: 'ATTRAPPEN-TEXT' })]);
+    expect(existsSync(builtPath(ctx, 'a'))).toBe(true);
     expect(ctx).toContain('    ATTRAPPEN-TEXT');
   });
 
@@ -822,7 +825,7 @@ describe('fileContextHandler — AK9 Notiztext im Gate', () => {
     const at = () => fileContextHandler.execute({
       sessionId: 'ak9', cwd: tmpDir, toolName: 'Read', toolInput: { file_path: testFile },
     } as any);
-    expect((await at()).hookSpecificOutput!.additionalContext).toContain('Pfad: /abs/a.md');
+    expect((await at()).hookSpecificOutput!.additionalContext).toContain('[[a]] — Titel a');
     expect(await at()).toEqual({ continue: true, suppressOutput: true });
   });
 
@@ -832,7 +835,7 @@ describe('fileContextHandler — AK9 Notiztext im Gate', () => {
     fetchSpy!.mockRestore();
     const viaEdit = await ctxOf(notes, { toolName: 'Edit' });
     expect(viaEdit).toBe(viaRead);
-    expect(viaEdit).toContain('  Pfad: /abs/a.md\n  Entschieden:\n    Text von a');
+    expect(viaEdit).toContain('[[a]] — Titel a (decision, verified —)\n  Entschieden:\n    Text von a');
     const r = await fileContextHandler.execute({
       sessionId: 'x', cwd: tmpDir, toolName: 'Edit', toolInput: { file_path: testFile },
     } as any);
@@ -840,7 +843,7 @@ describe('fileContextHandler — AK9 Notiztext im Gate', () => {
   });
 
   const realE2E = it.skipIf(!existsSync(REAL_CONTEXT));
-  realE2E('AK9 Ende-zu-Ende gegen den echten bin/context: Pfad existiert und Text steht im Block', async () => {
+  realE2E('AK9 Ende-zu-Ende gegen den echten bin/context: der aus Kopf und Slug gebildete Pfad existiert und Text steht im Block', async () => {
     const vaultDir = mkdtempSync(join(tmpdir(), 'file-context-vault-fake-vault-'));
     const prevVaultDir = process.env.VAULT_DIR;
     try {
@@ -851,8 +854,7 @@ describe('fileContextHandler — AK9 Notiztext im Gate', () => {
       process.env.NORD_VAULT_CONTEXT_CMD = REAL_CONTEXT;
       fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(noObservations());
       const ctx = (await blockOf())!;
-      const p = ctx.match(/Pfad: (.+)/)![1];
-      expect(existsSync(p)).toBe(true);
+      expect(existsSync(builtPath(ctx, 'aktiv'))).toBe(true);
       expect(ctx).toContain('E2E-ENTSCHEIDUNGSTEXT-4711');
     } finally {
       if (prevVaultDir === undefined) delete process.env.VAULT_DIR; else process.env.VAULT_DIR = prevVaultDir;

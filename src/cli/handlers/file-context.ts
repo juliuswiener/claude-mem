@@ -10,8 +10,8 @@ import { statSync } from 'fs';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { claimFileContextInjection, claimVaultNoteDelivery, hasVaultNoteDelivery } from './file-context-dedupe.js';
-import { getGoverningVaultNotes, formatVaultNotes, shownVaultSlugs } from './vault-notes.js';
+import { claimFileContextInjection, claimVaultNoteDelivery, claimVaultNoteText, hasVaultNoteDelivery } from './file-context-dedupe.js';
+import { getGoverningVaultNotes, formatVaultNotes, shownVaultSlugs, vaultTextSlugs } from './vault-notes.js';
 
 const FILE_READ_GATE_MIN_BYTES = 1_500;
 
@@ -200,7 +200,14 @@ export const fileContextHandler: EventHandler = {
           [] as PromiseSettledResult<string | null>[],
         )
       : [];
-    const vaultBlock = formatVaultNotes((await withDeadline(vaultNotesPromise, deadline, [])).flat());
+    const vaultNotes = (await withDeadline(vaultNotesPromise, deadline, [])).flat();
+    // AK13: the text of a note goes to (session, agent) once. Text claims come
+    // only now, after every file claim above was won: an instance that lost the
+    // file claim returned [] and sets none.
+    // ponytail: a claimed text that the 9000-char fit then cuts away is not re-offered.
+    const textAllowed = new Set(vaultTextSlugs(vaultNotes).filter(
+      slug => claimVaultNoteText(input.sessionId, input.agentId ?? '', slug)));
+    const vaultBlock = formatVaultNotes(vaultNotes, textAllowed);
     const timelines: string[] = [];
 
     timelineResults.forEach((result, index) => {

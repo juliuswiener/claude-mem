@@ -68,7 +68,7 @@ let prevVaultCmd: string | undefined;
 const note = (slug: string, extra: Record<string, unknown> = {}) => ({
   slug, title: `Titel ${slug}`, type: 'decision', verified: '2026-09-26', created: '2026-10-01',
   match: 'exact', broad_content: false, npatterns: 1,
-  path: `/abs/${slug}.md`, section: 'Entschieden', text: `Text von ${slug}`, ...extra,
+  path: `/abs/decisions/${slug}.md`, section: 'Entschieden', text: `Text von ${slug}`, ...extra,
 });
 
 /** Fake vault command; `byFile` maps the repo-relative file to the notes the vault returns. */
@@ -179,7 +179,7 @@ describe('vault compaction — AK10', () => {
     expect((await read()).hookSpecificOutput!.additionalContext).toContain('[[x]]');
   });
 
-  it('AK10 der Digest nennt die Notizen der Arbeitsmenge, häufigste zuerst, die ersten drei mit Pfad und Text', async () => {
+  it('AK10 der Digest nennt die Notizen der Arbeitsmenge, häufigste zuerst, die ersten drei mit Text, der Pfad steht im Kopf', async () => {
     setVault({
       'a.py': [note('p'), note('q')],
       'b.py': [note('q'), note('r')],
@@ -198,11 +198,11 @@ describe('vault compaction — AK10', () => {
     expect(order).toEqual(['q', 'p', 's', 'r']); // q: 4 Dateien, p: 2, dann Gleichstand nach Vault-Ergebnis der zuletzt gelieferten Datei (d.py)
     expect(out).toContain('[[q]] — Titel q (decision, verified 2026-09-26) — gilt für 4 Dateien: d.py, c.py, b.py …');
     expect(out).toContain('[[p]] — Titel p (decision, verified 2026-09-26) — gilt für 2 Dateien: d.py, a.py');
-    expect(out).toContain('  Pfad: /abs/q.md');
+    expect(out).toContain('ganze Notiz: /abs/{decisions,architecture,audits}/<slug>.md');
+    expect(out).not.toContain('Pfad:');
     expect(out).toContain('  Entschieden:\n    Text von q');
-    expect(out).toContain('  Pfad: /abs/s.md');
     expect(out).not.toContain('Text von r'); // vierte Notiz: nur Titelzeile
-    expect(out).toContain('Weitere:\n[[r]] — Titel r (decision, verified 2026-09-26) → /abs/r.md');
+    expect(out).toContain('Weitere:\n[[r]] — Titel r (decision, verified 2026-09-26)');
   });
 
   it('AK10 der Digest kürzt den Text auf 700 Zeichen mit Marker', async () => {
@@ -308,9 +308,9 @@ describe('vault compaction — AK10', () => {
     let dump = '';
     for (const t of tables) dump += JSON.stringify(db.query(`SELECT * FROM "${t}"`).all());
     db.close();
-    expect(tables).toEqual(['file_context_injections', 'vault_note_deliveries']);
+    expect(tables).toEqual(['file_context_injections', 'vault_note_deliveries', 'vault_note_texts']);
     expect(rows().map(r => JSON.parse(r.slugs))).toEqual([['x']]); // nur der Slug der anderen Sitzung bleibt
-    for (const forbidden of ['GEHEIMTEXT', 'Titel x', '/abs/x.md', 'Entschieden']) expect(dump).not.toContain(forbidden);
+    for (const forbidden of ['GEHEIMTEXT', 'Titel x', '/abs/decisions/x.md', 'Entschieden']) expect(dump).not.toContain(forbidden);
   });
 
   it('AK10 der Digest erscheint auch, wenn der Worker nicht antwortet oder das Projekt ausgeschlossen ist', async () => {

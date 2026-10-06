@@ -1,8 +1,8 @@
 // Adapter: vault notes that govern a file (`bin/context --governing`).
 // Every failure (missing command, timeout, bad JSON, no git repo, exit != 0)
 // resolves to "no notes" — this module never throws and never blocks the gate.
-// Surfaced to the agent: title/slug/type/verified plus path and the section text
-// the vault already cut (`path`, `section`, `text`). Nothing is persisted here.
+// Surfaced to the agent: title/slug/type/verified plus the section text the vault
+// already cut (`section`, `text`); the note path is built once, in the header, from `path`. Nothing is persisted here.
 import { spawn } from 'child_process';
 import { homedir } from 'os';
 import path from 'path';
@@ -17,6 +17,7 @@ export const VAULT_DIGEST_TEXT_CHARS = 700;
 export const VAULT_DIGEST_LIST_LIMIT = 8;
 const VAULT_DIGEST_FILE_NAMES = 3;
 const CUT_MARKER = '[… gekürzt]';
+const TEXT_DELIVERED = ' — Text schon geliefert';
 const VAULT_TIMEOUT_MS = 2_000;
 
 export interface VaultNote {
@@ -84,18 +85,25 @@ const titleLine = (n: VaultNote) => `[[${n.slug}]] — ${n.title} (${n.type}, ve
 
 interface Rendered { text: string; slugs: string[] }
 
+/** Vault root = two levels above a note path (<root>/<type>/<slug>.md); '' without any path. */
+function vaultRoot(notes: VaultNote[]): string {
+  const p = notes.find(n => n.path)?.path;
+  return p ? path.dirname(path.dirname(p)) : '';
+}
+
 interface RenderConfig {
-  header: string;
+  header: (hint: string) => string; // hint: how to build a note path from a slug, '' when unknown
   listHeader: string;
   maxChars: number;
   noteLimit: number;
   listLimit: number;
   textChars?: number; // cut each note text to this length (with marker) before the global fit
   suffix?: (n: VaultNote) => string; // appended to the title line of a note with text
+  textAllowed?: Set<string>; // notes in the text slot outside this set get a title line only
 }
 
 const GATE_CONFIG: RenderConfig = {
-  header: 'Vault-Notizen, die diese Datei regieren:',
+  header: hint => `Vault-Notizen, die diese Datei regieren${hint ? ` (${hint})` : ''}:`,
   listHeader: 'Weitere Notizen (nach Rang):',
   maxChars: VAULT_BLOCK_MAX_CHARS,
   noteLimit: VAULT_NOTE_LIMIT,
@@ -107,16 +115,19 @@ function render(notes: VaultNote[], cfg: RenderConfig = GATE_CONFIG): Rendered |
   const narrow = narrowNotes(notes);
   if (narrow.length === 0) return null;
   const head = narrow.slice(0, cfg.noteLimit);
-  const texts = head.map(n => (cfg.textChars && n.text.length > cfg.textChars
-    ? `${n.text.slice(0, cfg.textChars)}\n${CUT_MARKER}` : n.text));
+  const delivered = head.map(n => cfg.textAllowed !== undefined && !cfg.textAllowed.has(n.slug));
+  const texts = head.map((n, i) => (delivered[i] ? ''
+    : cfg.textChars && n.text.length > cfg.textChars
+      ? `${n.text.slice(0, cfg.textChars)}\n${CUT_MARKER}` : n.text));
+  const root = vaultRoot(narrow);
+  const header = cfg.header(root ? `ganze Notiz: ${root}/{decisions,architecture,audits}/<slug>.md` : '');
   let list = narrow.slice(cfg.noteLimit, cfg.noteLimit + cfg.listLimit);
   const total = narrow.length;
 
   const build = () => {
-    const lines = [cfg.header];
+    const lines = [header];
     head.forEach((n, i) => {
-      lines.push(titleLine(n) + (cfg.suffix?.(n) ?? ''));
-      if (n.path) lines.push(`  Pfad: ${n.path}`);
+      lines.push(titleLine(n) + (cfg.suffix?.(n) ?? '') + (delivered[i] ? TEXT_DELIVERED : ''));
       if (texts[i]) {
         if (n.section) lines.push(`  ${n.section}:`);
         for (const l of texts[i].split('\n')) lines.push(`    ${l}`);
@@ -124,7 +135,7 @@ function render(notes: VaultNote[], cfg: RenderConfig = GATE_CONFIG): Rendered |
     });
     if (list.length > 0) {
       lines.push(cfg.listHeader);
-      for (const n of list) lines.push(titleLine(n) + (n.path ? ` → ${n.path}` : ''));
+      for (const n of list) lines.push(titleLine(n));
     }
     const rest = total - head.length - list.length;
     if (rest > 0) lines.push(`und ${rest} weitere`);
@@ -132,7 +143,7 @@ function render(notes: VaultNote[], cfg: RenderConfig = GATE_CONFIG): Rendered |
   };
 
   let out = build();
-  // 1. texts: third, second, first note (title and path line stay).
+  // 1. texts: third, second, first note (title line stays).
   // The cut shrinks until the block fits; indent and marker add to the length, so one pass is not exact.
   for (let i = head.length - 1; i >= 0 && out.length > cfg.maxChars; i--) {
     const full = texts[i];
@@ -159,9 +170,18 @@ export function shownVaultSlugs(notes: VaultNote[]): string[] {
   return render(notes)?.slugs ?? [];
 }
 
-/** Format notes as a text block, or null when nothing (non-broad) is left. */
-export function formatVaultNotes(notes: VaultNote[]): string | null {
-  return render(notes)?.text ?? null;
+/** Slugs of the notes that stand in the text slot (the first VAULT_NOTE_LIMIT). */
+export function vaultTextSlugs(notes: VaultNote[]): string[] {
+  return narrowNotes(notes).slice(0, VAULT_NOTE_LIMIT).map(n => n.slug);
+}
+
+/**
+ * Format notes as a text block, or null when nothing (non-broad) is left.
+ * textAllowed: slugs whose text may be delivered; a text-slot note outside it
+ * shows as a title line only. Undefined = every text-slot note carries text.
+ */
+export function formatVaultNotes(notes: VaultNote[], textAllowed?: Set<string>): string | null {
+  return render(notes, { ...GATE_CONFIG, textAllowed })?.text ?? null;
 }
 
 export interface DigestFile { file: string; notes: VaultNote[]; seen: string[] }
@@ -183,7 +203,7 @@ export function formatVaultDigest(files: DigestFile[]): string | null {
   const ranked = [...merged.values()].sort((a, b) => b.files.length - a.files.length); // stable
   const filesOf = new Map(ranked.map(e => [e.note.slug, e.files]));
   return render(ranked.map(e => e.note), {
-    header: 'Vault-Notizen aus der bisherigen Arbeit (die Sitzung wurde kompaktiert; das Gate liefert sie beim nächsten Berühren einer Datei erneut):',
+    header: hint => `Vault-Notizen aus der bisherigen Arbeit (die Sitzung wurde kompaktiert; das Gate liefert sie beim nächsten Berühren einer Datei erneut${hint ? `; ${hint}` : ''}):`,
     listHeader: 'Weitere:',
     maxChars: VAULT_DIGEST_MAX_CHARS,
     noteLimit: VAULT_DIGEST_TEXT_NOTES,
