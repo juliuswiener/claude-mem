@@ -19,6 +19,8 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef } from '../agents/types.js';
 import { generateContext } from '../../context-generator.js';
 import { logger } from '../../../utils/logger.js';
+import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 
 /**
  * The session-start context for a generation that begins partway through a
@@ -68,6 +70,21 @@ export async function loadSessionStartContext(
     }, error instanceof Error ? error : new Error(String(error)));
     return '';
   }
+}
+
+/**
+ * Whether a generator sends its init prompt as a request of its own
+ * (CLAUDE_MEM_OBSERVE_BARE_PROMPTS). The init prompt carries the user's request
+ * and no tool call, so the observer has nothing to record and nearly always
+ * answers with noise: a full prefill for a near-empty reply (78 % of the
+ * generations on 2026-09-24..10-06, nord-mem logs). Off by default: the prompt
+ * opens the generation and goes out with the first tool event or summary, in
+ * that event's one request. Claude SDK feed only.
+ * ponytail: OpenAICompatibleProvider keeps the separate request; port it there
+ * if a non-Claude observer provider is ever used.
+ */
+export function observesBarePrompts(): boolean {
+  return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVE_BARE_PROMPTS === 'true';
 }
 
 /**

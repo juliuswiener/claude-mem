@@ -35,7 +35,7 @@ import {
   conversationChars,
   resolveConversationMaxChars,
 } from '../../shared/observer-recycle.js';
-import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
+import { recycleObserverConversation, loadSessionStartContext, observesBarePrompts } from './session/recycle-conversation.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type FieldCompressor } from './field-optimizer.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
@@ -752,18 +752,31 @@ export class ClaudeProvider {
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
-    session.lastPromptSentAt = Date.now();
-    session.lastGeneratorSource = 'init';
-    yield {
-      type: 'user',
-      message: {
-        role: 'user',
-        content: initPrompt
-      },
-      session_id: session.contentSessionId,
-      parent_tool_use_id: null,
-      isSynthetic: true
+    // By default the init prompt is not a request of its own: it goes out in the
+    // same message as the first observation or summary prompt (#4336). The
+    // history above already holds it, so only the wire message is combined.
+    let pendingInitPrompt: string | null = observesBarePrompts() ? null : initPrompt;
+    const withPendingInitPrompt = (prompt: string): string => {
+      if (pendingInitPrompt === null) return prompt;
+      const combined = `${pendingInitPrompt}\n\n${prompt}`;
+      pendingInitPrompt = null;
+      return combined;
     };
+
+    if (pendingInitPrompt === null) {
+      session.lastPromptSentAt = Date.now();
+      session.lastGeneratorSource = 'init';
+      yield {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: initPrompt
+        },
+        session_id: session.contentSessionId,
+        parent_tool_use_id: null,
+        isSynthetic: true
+      };
+    }
 
     for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
       session.pendingAgentId = message.agentId ?? null;
@@ -822,7 +835,7 @@ export class ClaudeProvider {
           type: 'user',
           message: {
             role: 'user',
-            content: obsPrompt
+            content: withPendingInitPrompt(obsPrompt)
           },
           session_id: session.contentSessionId,
           parent_tool_use_id: null,
@@ -846,7 +859,7 @@ export class ClaudeProvider {
           type: 'user',
           message: {
             role: 'user',
-            content: summaryPrompt
+            content: withPendingInitPrompt(summaryPrompt)
           },
           session_id: session.contentSessionId,
           parent_tool_use_id: null,
