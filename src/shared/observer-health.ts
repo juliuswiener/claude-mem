@@ -400,10 +400,7 @@ export function renderObserverQuotaCooldownNotice(
   const message = cooldown?.message ? scrubErrorMessage(cooldown.message) : null;
 
   return [
-    // Not "a provider quota cooldown": the pause is claude-mem's own breaker
-    // as often as it is a real provider refusal (eigene-bremse-ist-eine-
-    // pause-kein-ausfall) — "Latest signal" below says which, so the header
-    // stays neutral rather than pre-blaming the provider.
+    // "Latest signal" below carries the message that armed the cooldown.
     '⚠️ Heads up: claude-mem is paused while a quota cooldown is active.',
     '',
     `The memory observer is waiting out a quota cooldown on ${provider}${windowText} until ${untilText}.`,

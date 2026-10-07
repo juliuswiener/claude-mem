@@ -178,8 +178,7 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
  * Quota-aware wall-clock guard body (#2234), pulled out of the SDK message
  * loop below so this exact decision-to-session-mutation step — not a
  * reimplementation of it — is what a test drives. Sets abortReason and
- * quotaAbortDetail (carrying decision.kind, own_guard vs. provider_rejected,
- * see eigene-bremse-ist-eine-pause-kein-ausfall) and aborts the controller.
+ * quotaAbortDetail (carrying decision.kind) and aborts the controller.
  * Returns true when it aborted, telling the caller to break out of the loop.
  */
 export function abortSessionForQuotaIfNeeded(
@@ -197,11 +196,9 @@ export function abortSessionForQuotaIfNeeded(
     authMethod,
   });
   session.abortReason = `quota:${decision.window ?? 'unknown'}`;
-  // Carry WHO paused: SessionRoutes' abort-consumption block reads
-  // this to pick the cooldown message (own guard vs. provider
-  // refusal) without re-parsing `decision.reason`. Falls back to
-  // 'provider_rejected' — the safe, today's-message default — if
-  // `kind` is ever missing.
+  // Carry the decision for SessionRoutes' abort-consumption block, so it
+  // need not re-parse `decision.reason`. Falls back to 'provider_rejected'
+  // — the safe, today's-message default — if `kind` is ever missing.
   session.quotaAbortDetail = {
     kind: decision.kind ?? 'provider_rejected',
     reason: decision.reason ?? '',
@@ -367,9 +364,9 @@ export class ClaudeProvider {
         // Quota-aware wall-clock guard (#2234): the SDK pushes
         // `rate_limit_event` messages carrying live subscription quota state
         // (see extractRateLimitInfo for the shape). Capture the snapshot, then
-        // bail out of the loop before issuing another request if we've
-        // crossed a per-window threshold. API-key users are exempt — they
-        // authorized per-call spend.
+        // bail out of the loop before issuing another request if the provider
+        // has refused a window. Utilization alone never aborts. API-key users
+        // are exempt — they authorized per-call spend.
         const info = extractRateLimitInfo(message);
         if (info) {
           // The observer runs on the same account as the observed session,

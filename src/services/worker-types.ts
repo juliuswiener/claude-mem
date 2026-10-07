@@ -73,13 +73,11 @@ export interface ActiveSession {
   abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | 'provider_switch' | string | null;
   /**
    * Detail from shouldAbortForQuota()'s decision, carried past the
-   * abortReason string exchange so the cooldown message can name claude-mem
-   * as the one pausing (`kind: 'own_guard'`) instead of always blaming the
-   * provider (`eigene-bremse-ist-eine-pause-kein-ausfall`). Null for every
-   * non-quota abort and for the observer-text quota path (ResponseProcessor
-   * sets abortReason directly, without going through the guard).
+   * abortReason string exchange. Null for every non-quota abort and for the
+   * observer-text quota path (ResponseProcessor sets abortReason directly,
+   * without going through the guard).
    */
-  quotaAbortDetail?: { kind: 'provider_rejected' | 'own_guard'; reason: string } | null;
+  quotaAbortDetail?: { kind: 'provider_rejected'; reason: string } | null;
   respawnTimer?: ReturnType<typeof setTimeout>;
   /** When the latest compression prompt was dispatched to the model — telemetry compression_ms. */
   lastPromptSentAt?: number | null;

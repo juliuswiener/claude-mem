@@ -9,11 +9,8 @@ import { paths } from '../../../../src/shared/paths.js';
 /**
  * Drives the REAL call site — SessionRoutes' .finally() handler calls this
  * exact exported function, not a reimplementation of it — so a mutant that
- * discards session.quotaAbortDetail before it reaches
- * resolveQuotaAbortOutcome (reported: `resolveQuotaAbortOutcome
- * (quotaAbortDetail)` -> `resolveQuotaAbortOutcome(null)` left the gate
- * green, because the earlier tests only covered resolveQuotaAbortOutcome in
- * isolation) shows up here as red. DATA_DIR is already pinned to a safe
+ * leaves a field unconsumed, or skips the cooldown or the observer-failure
+ * streak, shows up here as red. DATA_DIR is already pinned to a safe
  * per-run temp dir by tests/preload.ts, so the real recordQuotaExhausted /
  * recordObserverFailure disk writes below never touch ~/.claude-mem.
  */
@@ -35,28 +32,16 @@ afterEach(() => {
 });
 
 describe('consumeAbortReason — real SessionRoutes call site', () => {
-  it('own_guard: arms the cooldown with a claude-mem-authored message and does NOT touch the observer-failure streak', () => {
+  it('provider_rejected: arms the cooldown with the provider-outage message AND the observer-failure streak', () => {
     const before = readObserverHealth()?.consecutiveFailures ?? 0;
     const session = {
-      abortReason: 'quota:five_hour',
-      quotaAbortDetail: { kind: 'own_guard' as const, reason: 'quota:five_hour utilization 96.0% >= 95%' },
+      abortReason: 'quota:seven_day',
+      quotaAbortDetail: { kind: 'provider_rejected' as const, reason: 'quota:seven_day rejected by provider' },
     };
-    expect(consumeAbortReason('claude', session)).toBe('quota:five_hour');
+    expect(consumeAbortReason('claude', session)).toBe('quota:seven_day');
     // Both fields are consumed, so the next generator exit cannot re-read them.
     expect(session.abortReason).toBeNull();
     expect(session.quotaAbortDetail).toBeNull();
-    const cooldown = getQuotaCooldown('claude');
-    expect(cooldown?.message).toContain('claude-mem paused its observer');
-    const after = readObserverHealth()?.consecutiveFailures ?? 0;
-    expect(after).toBe(before);
-  });
-
-  it('provider_rejected: arms the cooldown with the provider-outage message AND the observer-failure streak', () => {
-    const before = readObserverHealth()?.consecutiveFailures ?? 0;
-    consumeAbortReason('claude', {
-      abortReason: 'quota:seven_day',
-      quotaAbortDetail: { kind: 'provider_rejected', reason: 'quota:seven_day rejected by provider' },
-    });
     const cooldown = getQuotaCooldown('claude');
     expect(cooldown?.message).toBe('Provider reported the inference allowance exhausted');
     const after = readObserverHealth()?.consecutiveFailures ?? 0;

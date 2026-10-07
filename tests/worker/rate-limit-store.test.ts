@@ -15,9 +15,10 @@ import type { ActiveSession } from '../../src/services/worker-types.js';
 
 // Quota-aware wall-clock guard (#2234).
 //
-// Subscription users (cli/oauth) get aborted when they cross per-window
-// utilization thresholds, plus a reset-grace buffer for the rolling 5h
-// window. API-key users are exempt because they authorized per-call spend.
+// Subscription users (cli/oauth) get aborted when the provider refuses a
+// window (status 'rejected'); utilization alone never aborts (see
+// observer-quota-no-self-brake.test.ts). API-key users are exempt because
+// they authorized per-call spend.
 
 const FIXED_NOW = 1_700_000_000_000; // arbitrary epoch ms anchor
 
@@ -96,25 +97,17 @@ describe('shouldAbortForQuota — api_key auth', () => {
     store = freshStore();
   });
 
-  it('never aborts even at five_hour utilization 0.99', () => {
-    store.set({ rateLimitType: 'five_hour', utilization: 0.99, status: 'allowed_warning' });
+  // Rejected snapshots on purpose: with no utilization guard left, only a
+  // refusal could abort, so only a refusal tells the exemption from its absence.
+  it('never aborts even when five_hour is rejected', () => {
+    store.set({ rateLimitType: 'five_hour', utilization: 0.99, status: 'rejected' });
     const decision = shouldAbortForQuota('api_key', store, FIXED_NOW);
     expect(decision.abort).toBe(false);
   });
 
-  it('never aborts even at seven_day_opus 0.99', () => {
-    store.set({ rateLimitType: 'seven_day_opus', utilization: 0.99 });
+  it('never aborts even when seven_day_opus is rejected', () => {
+    store.set({ rateLimitType: 'seven_day_opus', utilization: 0.99, status: 'rejected' });
     const decision = shouldAbortForQuota('API key (from ~/.claude-mem/.env)', store, FIXED_NOW);
-    expect(decision.abort).toBe(false);
-  });
-
-  it('never aborts when reset is imminent', () => {
-    store.set({
-      rateLimitType: 'five_hour',
-      utilization: 0.92,
-      resetsAt: FIXED_NOW + 60_000, // 1 min away
-    });
-    const decision = shouldAbortForQuota('api_key', store, FIXED_NOW);
     expect(decision.abort).toBe(false);
   });
 });
@@ -128,16 +121,15 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
 
   // 2026-09-28: a worker that ran across the weekly reset kept the 93% seven_day
   // snapshot from before it and aborted on it the next morning, at 2% real usage.
+  // Only a refusal aborts now; a stale refusal must not outlive its window either.
   it('ignores a snapshot whose window has already reset', () => {
-    store.set({ rateLimitType: 'seven_day', utilization: 0.93, status: 'allowed_warning', resetsAt: FIXED_NOW - 60_000 });
-    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
     store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt: FIXED_NOW - 60_000 });
     expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
     // resetsAt as epoch seconds, the shape Claude Code has been seen writing
-    store.set({ rateLimitType: 'seven_day', utilization: 0.93, resetsAt: Math.floor((FIXED_NOW - 60_000) / 1000) });
+    store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt: Math.floor((FIXED_NOW - 60_000) / 1000) });
     expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
-    // still before the reset: the guard holds
-    store.set({ rateLimitType: 'seven_day', utilization: 0.93, resetsAt: FIXED_NOW + 60_000 });
+    // still before the reset: the refusal holds
+    store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt: FIXED_NOW + 60_000 });
     expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(true);
   });
 
@@ -150,29 +142,6 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     });
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
     expect(decision.abort).toBe(false);
-  });
-
-  it('aborts on active overage above the utilization threshold', () => {
-    store.set({
-      rateLimitType: 'overage',
-      utilization: 0.96,
-      isUsingOverage: true,
-      status: 'allowed_warning',
-    });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(true);
-    expect(decision.window).toBe('overage');
-  });
-
-  it('preserves overage utilization behavior when isUsingOverage is missing', () => {
-    store.set({
-      rateLimitType: 'overage',
-      utilization: 0.96,
-      status: 'allowed_warning',
-    });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(true);
-    expect(decision.window).toBe('overage');
   });
 
   it('aborts when inactive overage is rejected by overageStatus', () => {
@@ -200,83 +169,17 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(decision.window).toBe('overage');
   });
 
-  it('aborts on five_hour at 0.96 with reason mentioning "five_hour"', () => {
-    store.set({ rateLimitType: 'five_hour', utilization: 0.96 });
+  it('aborts on a rejected five_hour with reason mentioning "five_hour"', () => {
+    store.set({ rateLimitType: 'five_hour', status: 'rejected' });
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
     expect(decision.abort).toBe(true);
     expect(decision.window).toBe('five_hour');
     expect(decision.reason).toContain('five_hour');
   });
 
-  it('does not abort on five_hour at 0.94 (below 0.95 threshold, no reset pressure)', () => {
-    store.set({
-      rateLimitType: 'five_hour',
-      utilization: 0.94,
-      resetsAt: FIXED_NOW + 60 * 60 * 1000, // 1h away
-    });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(false);
-  });
-
-  it('aborts on seven_day_opus at 0.94 (>= 0.93 threshold)', () => {
-    store.set({ rateLimitType: 'seven_day_opus', utilization: 0.94 });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(true);
-    expect(decision.window).toBe('seven_day_opus');
-  });
-
-  it('aborts on seven_day_sonnet at 0.93 (>= 0.92 threshold)', () => {
-    store.set({ rateLimitType: 'seven_day_sonnet', utilization: 0.93 });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(true);
-    expect(decision.window).toBe('seven_day_sonnet');
-  });
-
-  it('aborts on five_hour at 0.90 with resetsAt 10 min away (grace buffer)', () => {
-    store.set({
-      rateLimitType: 'five_hour',
-      utilization: 0.90,
-      resetsAt: FIXED_NOW + 10 * 60 * 1000, // 10 min
-    });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(true);
-    expect(decision.window).toBe('five_hour');
-    expect(decision.reason).toContain('resets');
-  });
-
-  it('does not abort on five_hour at 0.90 with resetsAt 30 min away (outside grace)', () => {
-    store.set({
-      rateLimitType: 'five_hour',
-      utilization: 0.90,
-      resetsAt: FIXED_NOW + 30 * 60 * 1000, // 30 min
-    });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(false);
-  });
-
-  it('does not abort when all windows are below threshold', () => {
-    store.set({ rateLimitType: 'five_hour', utilization: 0.5 });
-    store.set({ rateLimitType: 'seven_day_opus', utilization: 0.4 });
-    store.set({ rateLimitType: 'seven_day_sonnet', utilization: 0.3 });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(false);
-  });
-
-  it('skips reset-grace check when utilization is below the floor', () => {
-    // resetsAt within grace window but util well below the 0.85 floor —
-    // no point aborting on a window that just reset.
-    store.set({
-      rateLimitType: 'five_hour',
-      utilization: 0.10,
-      resetsAt: FIXED_NOW + 5 * 60 * 1000,
-    });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(false);
-  });
-
-  it('reports the first matching window when multiple are over threshold', () => {
-    store.set({ rateLimitType: 'five_hour', utilization: 0.99 });
-    store.set({ rateLimitType: 'seven_day_opus', utilization: 0.99 });
+  it('reports the first matching window when multiple are rejected', () => {
+    store.set({ rateLimitType: 'five_hour', status: 'rejected' });
+    store.set({ rateLimitType: 'seven_day_opus', status: 'rejected' });
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
     expect(decision.abort).toBe(true);
     // five_hour is checked first per the iteration order.
@@ -289,10 +192,9 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
   });
 });
 
-// eigene-bremse-ist-eine-pause-kein-ausfall: a quota abort carries WHO caused
-// it, so callers can tell claude-mem's own guard apart from an actual
-// provider refusal without re-parsing `reason`.
-describe('shouldAbortForQuota — kind (own guard vs. provider rejection)', () => {
+// A quota abort carries the kind that caused it. Since claude-mem's own guard
+// went away, a provider refusal is the only kind.
+describe('shouldAbortForQuota — kind', () => {
   const cliAuth = 'cli';
   let store: RateLimitStore;
   beforeEach(() => { store = freshStore(); });
@@ -302,24 +204,6 @@ describe('shouldAbortForQuota — kind (own guard vs. provider rejection)', () =
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
     expect(decision.abort).toBe(true);
     expect(decision.kind).toBe('provider_rejected');
-  });
-
-  it('marks an own utilization-threshold abort as kind "own_guard"', () => {
-    store.set({ rateLimitType: 'five_hour', utilization: 0.96 });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(true);
-    expect(decision.kind).toBe('own_guard');
-  });
-
-  it('marks an own reset-grace abort as kind "own_guard"', () => {
-    store.set({
-      rateLimitType: 'five_hour',
-      utilization: 0.90,
-      resetsAt: FIXED_NOW + 10 * 60 * 1000,
-    });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(true);
-    expect(decision.kind).toBe('own_guard');
   });
 });
 
@@ -336,26 +220,12 @@ describe('resolveQuotaAbortOutcome', () => {
     expect(outcome.recordFailure).toBe(true);
   });
 
-  it('names claude-mem, the window, utilization and threshold for an own-guard pause, and does not arm the failure ledger', () => {
-    const outcome = resolveQuotaAbortOutcome({
-      kind: 'own_guard',
-      reason: 'quota:seven_day utilization 93.0% >= 93%',
-    });
-    expect(outcome.message).toContain('claude-mem paused its observer');
-    expect(outcome.message).toContain('seven_day');
-    expect(outcome.message).toContain('93.0%');
-    expect(outcome.message).toContain('93%');
-    expect(outcome.message).toContain('the provider has not refused anything');
-    expect(outcome.recordFailure).toBe(false);
-  });
 });
 
-// eigene-bremse-ist-eine-pause-kein-ausfall, call-site wiring: exercises the
-// REAL function ClaudeProvider's SDK message loop calls on a quota abort
-// (not a reimplementation of it), so a mutant that hardcodes
-// `kind: 'provider_rejected'` instead of forwarding `decision.kind` shows up
-// here — resolveQuotaAbortOutcome/shouldAbortForQuota tests above only cover
-// the helpers in isolation and would stay green under that mutant.
+// Call-site wiring: exercises the REAL function ClaudeProvider's SDK message
+// loop calls on a quota abort (not a reimplementation of it) — the
+// resolveQuotaAbortOutcome/shouldAbortForQuota tests above only cover the
+// helpers in isolation.
 function fakeSession(): ActiveSession {
   return {
     sessionDbId: 1,
@@ -366,19 +236,6 @@ function fakeSession(): ActiveSession {
 }
 
 describe('abortSessionForQuotaIfNeeded — real ClaudeProvider call site', () => {
-  it('forwards kind "own_guard" from the decision onto session.quotaAbortDetail', () => {
-    const store = freshStore();
-    store.set({ rateLimitType: 'five_hour', utilization: 0.96 });
-    const session = fakeSession();
-
-    const aborted = abortSessionForQuotaIfNeeded(session, 'cli', store);
-
-    expect(aborted).toBe(true);
-    expect(session.quotaAbortDetail?.kind).toBe('own_guard');
-    expect(session.abortReason).toBe('quota:five_hour');
-    expect(session.abortController.signal.aborted).toBe(true);
-  });
-
   it('forwards kind "provider_rejected" from the decision onto session.quotaAbortDetail', () => {
     const store = freshStore();
     store.set({ rateLimitType: 'seven_day', utilization: 0, isUsingOverage: false, status: 'rejected' });

@@ -86,13 +86,10 @@ function normalizeAbortReason(
 
 /**
  * Quota-abort accounting: the ONE point where "did a quota abort just
- * happen, and if so was it claude-mem's own guard or the provider" is
- * decided. own_guard pauses (eigene-bremse-ist-eine-pause-kein-ausfall) get a
- * claude-mem-authored cooldown message and must NOT arm the observer-failure
- * ledger — a deliberate pause, not an outage. Every other case (provider
- * rejection, or no detail at all — the assistant-prose quota path never
- * went through shouldAbortForQuota) keeps today's message and failure
- * accounting. Reads and clears both abort fields off the session and returns the
+ * happen" is decided. Every quota abort is the provider refusing (a rejected
+ * snapshot, or no detail at all — the assistant-prose quota path never went
+ * through shouldAbortForQuota): it arms the cooldown and the observer-failure
+ * ledger. Reads and clears both abort fields off the session and returns the
  * reason. Exported so a test can drive this exact code, not a reimplementation
  * of it — the .finally() handler below just calls it.
  */

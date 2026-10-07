@@ -24,9 +24,9 @@
  * per `rateLimitType` bucket, in-memory only). State resets on worker
  * restart — that's fine, the SDK pushes a fresh event on the next request.
  *
- * Quota-aware abort logic gates the worker from continuing to consume a
- * subscription bucket once it crosses a per-window threshold. API-key
- * users are exempt because they authorized per-call spend.
+ * Quota-aware abort logic stops the worker from consuming a subscription
+ * bucket once the provider has refused it. It sets no utilization threshold
+ * of its own. API-key users are exempt because they authorized per-call spend.
  */
 
 import { epochToMs } from '../../shared/quota-cooldown.js';
@@ -169,32 +169,11 @@ export function buildUsageLimitHitProps(
 }
 
 /**
- * Per-window utilization thresholds for subscription users (cli/oauth).
- * Crossing one of these aborts the SDK loop so we don't burn through the
- * window on background memory work and starve interactive sessions.
+ * Who caused a quota abort: the provider actually refusing
+ * (status='rejected', or overageStatus='rejected'). claude-mem has no
+ * utilization guard that aborts ahead of a refusal. Carried alongside `reason`.
  */
-const UTILIZATION_THRESHOLDS: Record<RateLimitWindow, number> = {
-  five_hour: 0.95,
-  seven_day_opus: 0.93,
-  seven_day_sonnet: 0.92,
-  seven_day: 0.93,
-  overage: 0.95,
-};
-
-/** Reset-window grace: bail early if a window resets within this many ms. */
-const RESET_GRACE_MS = 15 * 60 * 1000; // 15 minutes
-/** Utilization floor before the reset-grace check kicks in. */
-const RESET_GRACE_UTILIZATION_FLOOR = 0.85;
-
-/**
- * Who caused a quota abort. `provider_rejected` is the provider actually
- * refusing (status='rejected', or overageStatus='rejected'). `own_guard` is
- * claude-mem's own utilization-threshold or reset-grace check pausing ahead
- * of any refusal — a deliberate pause, not an outage
- * (eigene-bremse-ist-eine-pause-kein-ausfall). Carried alongside `reason` so
- * callers can pick the right cooldown message without re-parsing it.
- */
-export type QuotaAbortKind = 'provider_rejected' | 'own_guard';
+export type QuotaAbortKind = 'provider_rejected';
 
 /**
  * Decide whether to abort SDK consumption based on the latest rate-limit
@@ -202,9 +181,10 @@ export type QuotaAbortKind = 'provider_rejected' | 'own_guard';
  *
  * - `api_key` (or any string starting with "API key"): never abort —
  *   per-call billing means the user already authorized the spend.
- * - `cli` / OAuth / subscription: per-window utilization thresholds plus a
- *   reset-grace buffer so we avoid burning the last few percent right
- *   before a window resets.
+ * - `cli` / OAuth / subscription: abort only when the provider has refused
+ *   (`rejected`). Utilization alone, however high, never aborts — claude-mem
+ *   does not brake the observer ahead of the provider
+ *   (claude-mem-bremse-faellt-weg-claude-bridge-faengt-die-erschoepfung-ab).
  */
 export function shouldAbortForQuota(
   authMethod: string,
@@ -231,23 +211,15 @@ export function shouldAbortForQuota(
 
     // A snapshot only speaks for its own window. The store lives as long as the
     // worker, and a worker whose observer is paused sees no new rate-limit event,
-    // so after a reset the old snapshot would keep aborting on usage that no
-    // longer exists (2026-09-28: 93% seven_day from before the weekly reset,
+    // so after a reset the old snapshot would keep aborting on a limit that no
+    // longer applies (2026-09-28: 93% seven_day from before the weekly reset,
     // real usage 2%). The next SDK event replaces it with the live value.
     const resetsAtMs = epochToMs(entry.resetsAt);
     if (resetsAtMs !== undefined && resetsAtMs <= now) continue;
 
-    const util = entry.utilization;
-    const threshold = UTILIZATION_THRESHOLDS[window];
-    // An explicit false means the provider is not charging the overage bucket,
-    // so its utilization does not represent active quota consumption.
-    const appliesUtilizationThreshold =
-      window !== 'overage' || entry.isUsingOverage !== false;
-
-    // Provider-side rejection trumps utilization heuristics. A snapshot with
-    // status='rejected' (or overageStatus='rejected' on the overage window)
-    // means the provider has already declared the bucket exhausted; we must
-    // stop regardless of whether utilization is reported.
+    // A snapshot with status='rejected' (or overageStatus='rejected' on the
+    // overage window) means the provider has already declared the bucket
+    // exhausted; we must stop regardless of whether utilization is reported.
     const isRejected =
       entry.status === 'rejected' ||
       (window === 'overage' && entry.overageStatus === 'rejected');
@@ -260,68 +232,25 @@ export function shouldAbortForQuota(
         kind: 'provider_rejected',
       };
     }
-
-    if (appliesUtilizationThreshold && typeof util === 'number' && util >= threshold) {
-      return {
-        abort: true,
-        window,
-        reason: `quota:${window} utilization ${(util * 100).toFixed(1)}% >= ${(threshold * 100).toFixed(0)}%`,
-        kind: 'own_guard',
-      };
-    }
-
-    // Reset-grace buffer: only meaningful for the rolling 5h window where
-    // a fresh bucket is imminent. Skip when utilization is low — no point
-    // bailing on a window that just reset to ~0%.
-    if (
-      window === 'five_hour' &&
-      typeof entry.resetsAt === 'number' &&
-      typeof util === 'number' &&
-      util >= RESET_GRACE_UTILIZATION_FLOOR
-    ) {
-      const msUntilReset = entry.resetsAt - now;
-      if (msUntilReset > 0 && msUntilReset <= RESET_GRACE_MS) {
-        return {
-          abort: true,
-          window,
-          reason: `quota:${window} resets in ${Math.round(msUntilReset / 60000)}m (grace buffer ${RESET_GRACE_MS / 60000}m, util ${(util * 100).toFixed(1)}%)`,
-          kind: 'own_guard',
-        };
-      }
-    }
   }
 
   return { abort: false };
 }
 
 /**
- * Turn a carried quota-abort detail into the cooldown message and whether it
- * should count toward the observer-health failure streak
- * (eigene-bremse-ist-eine-pause-kein-ausfall).
- *
- * `provider_rejected` — or no detail at all, which is what the
+ * Turn a quota abort into the cooldown message and whether it should count
+ * toward the observer-health failure streak. Every quota abort is the provider
+ * refusing — a `rejected` snapshot, or no detail at all, which is what the
  * assistant-prose quota path in ResponseProcessor.ts sets: it aborts by
  * setting `abortReason` directly, with no `shouldAbortForQuota()` decision to
- * carry — means the provider actually refused, so this keeps today's
- * provider-outage message and still arms the failure ledger.
- *
- * `own_guard` means claude-mem's OWN utilization/reset-grace check paused
- * ahead of any refusal: the message names claude-mem as the one pausing plus
- * the window/utilization/threshold from `reason`, and it must NOT count as an
- * observer failure — the cooldown still arms (recordQuotaExhausted is called
- * either way) so no request follows on, but session-start must not show the
- * "can't save memories" outage banner for a pause claude-mem chose itself.
+ * carry — so the message is the provider-outage one and the failure ledger arms.
+ * ponytail: `_detail` no longer changes the outcome (claude-mem's own guard was
+ * the only other kind); drop it together with `kind` and `quotaAbortDetail`.
  */
 export function resolveQuotaAbortOutcome(
-  detail: { kind: QuotaAbortKind; reason: string } | null | undefined,
+  _detail: { kind: QuotaAbortKind; reason: string } | null | undefined,
 ): { message: string; recordFailure: boolean } {
-  if (!detail || detail.kind === 'provider_rejected') {
-    return { message: 'Provider reported the inference allowance exhausted', recordFailure: true };
-  }
-  return {
-    message: `claude-mem paused its observer: ${detail.reason.replace(/^quota:/, '')}; the provider has not refused anything`,
-    recordFailure: false,
-  };
+  return { message: 'Provider reported the inference allowance exhausted', recordFailure: true };
 }
 
 /**
