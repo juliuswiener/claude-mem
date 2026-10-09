@@ -398,7 +398,7 @@ function syncObserverHealthQuotaCooldown(): void {
       active: true,
       provider: latest.provider,
       armedAt: latest.armedAtMs,
-      until: latest.armedAtMs + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+      until: quotaCooldownEndsAtMs(latest),
       ...(latest.window ? { window: latest.window } : {}),
       message: latest.message,
     });
