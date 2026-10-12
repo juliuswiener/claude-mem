@@ -89,6 +89,36 @@ const DELETE_MAIN_TEXTS_SQL = `
   DELETE FROM vault_note_texts WHERE session_id = ? AND agent_id = ''
 `;
 
+// Title protocol: which notes (session, agent) already saw as a line of the
+// ranked list. Separate from the texts: a note first listed as a title still
+// gets its text once it ranks 1–3 for another file. Slugs only, same rules.
+const VAULT_TITLE_DDL = `
+  CREATE TABLE IF NOT EXISTS vault_note_titles (
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    delivered_at_epoch INTEGER NOT NULL,
+    PRIMARY KEY (session_id, agent_id, slug)
+  )
+`;
+
+// A note whose text (session, agent) already has is never listed as a title.
+const CLAIM_VAULT_TITLE_SQL = `
+  INSERT INTO vault_note_titles (session_id, agent_id, slug, delivered_at_epoch)
+  SELECT ?1, ?2, ?3, ?4
+  WHERE NOT EXISTS (SELECT 1 FROM vault_note_texts WHERE session_id = ?1 AND agent_id = ?2 AND slug = ?3)
+  ON CONFLICT(session_id, agent_id, slug) DO NOTHING
+  RETURNING 1 AS claimed
+`;
+
+const DELETE_EXPIRED_VAULT_TITLE_SQL = `
+  DELETE FROM vault_note_titles WHERE delivered_at_epoch < ?
+`;
+
+const DELETE_MAIN_TITLES_SQL = `
+  DELETE FROM vault_note_titles WHERE session_id = ? AND agent_id = ''
+`;
+
 const CLAIM_VAULT_DELIVERY_SQL = `
   INSERT INTO vault_note_deliveries (session_id, agent_id, file_path, slugs, delivered_at_epoch)
   VALUES (?, ?, ?, ?, ?)
@@ -174,6 +204,7 @@ function openGateDb(): Database | null {
     opened.run(GATE_TABLE_DDL);
     opened.run(VAULT_DELIVERY_DDL);
     opened.run(VAULT_TEXT_DDL);
+    opened.run(VAULT_TITLE_DDL);
     cachedGateDb = { path: dbPath, db: opened };
     return cachedGateDb.db;
   } catch (err) {
@@ -250,6 +281,7 @@ export function claimVaultNoteDelivery(
     const now = Date.now();
     db.query(DELETE_EXPIRED_VAULT_SQL).run(now - GATE_ROW_TTL_MS);
     db.query(DELETE_EXPIRED_VAULT_TEXT_SQL).run(now - GATE_ROW_TTL_MS);
+    db.query(DELETE_EXPIRED_VAULT_TITLE_SQL).run(now - GATE_ROW_TTL_MS);
     return db.query(CLAIM_VAULT_DELIVERY_SQL)
       .get(sessionId, agentId, absolutePath, JSON.stringify(slugs), now) != null;
   } catch (err) {
@@ -274,6 +306,25 @@ export function claimVaultNoteText(sessionId: string, agentId: string, slug: str
     return db.query(CLAIM_VAULT_TEXT_SQL).get(sessionId, agentId, slug, Date.now()) != null;
   } catch (err) {
     logger.debug('HOOK', 'vault text claim failed, delivering text without dedupe', {
+      error: describeError(err),
+    });
+    return true;
+  }
+}
+
+/**
+ * Atomically claim the right to list one note as a TITLE line for
+ * (session, agent). `false` when the agent already saw that title, or already
+ * has the note's text. Fails open like the text claim; same calling rule.
+ */
+export function claimVaultNoteTitle(sessionId: string, agentId: string, slug: string): boolean {
+  if (!sessionId) return true;
+  const db = openGateDb();
+  if (!db) return true;
+  try {
+    return db.query(CLAIM_VAULT_TITLE_SQL).get(sessionId, agentId, slug, Date.now()) != null;
+  } catch (err) {
+    logger.debug('HOOK', 'vault title claim failed, listing the title without dedupe', {
       error: describeError(err),
     });
     return true;
@@ -314,6 +365,7 @@ export async function resetVaultNoteDeliveries(sessionId: string): Promise<strin
     delivered = db.query(SELECT_MAIN_DELIVERIES_SQL).all(sessionId, DIGEST_WORKING_SET) as typeof delivered;
     db.query(DELETE_MAIN_DELIVERIES_SQL).run(sessionId);
     db.query(DELETE_MAIN_TEXTS_SQL).run(sessionId); // the agent lost the texts too
+    db.query(DELETE_MAIN_TITLES_SQL).run(sessionId); // and the titles
   } catch (err) {
     logger.debug('HOOK', 'vault delivery reset failed', { error: describeError(err) });
     return '';

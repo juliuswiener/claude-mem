@@ -308,7 +308,8 @@ describe('vault compaction — AK10', () => {
     let dump = '';
     for (const t of tables) dump += JSON.stringify(db.query(`SELECT * FROM "${t}"`).all());
     db.close();
-    expect(tables).toEqual(['file_context_injections', 'vault_note_deliveries', 'vault_note_texts']);
+    // vault_note_titles seit dem Titel-Protokoll (einmal je Segment); nur Slugs, wie die anderen.
+    expect(tables).toEqual(['file_context_injections', 'vault_note_deliveries', 'vault_note_texts', 'vault_note_titles']);
     expect(rows().map(r => JSON.parse(r.slugs))).toEqual([['x']]); // nur der Slug der anderen Sitzung bleibt
     for (const forbidden of ['GEHEIMTEXT', 'Titel x', '/abs/decisions/x.md', 'Entschieden']) expect(dump).not.toContain(forbidden);
   });

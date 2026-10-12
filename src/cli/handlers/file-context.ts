@@ -10,8 +10,8 @@ import { statSync } from 'fs';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { claimFileContextInjection, claimVaultNoteDelivery, claimVaultNoteText, hasVaultNoteDelivery } from './file-context-dedupe.js';
-import { getGoverningVaultNotes, formatVaultNotes, shownVaultSlugs, vaultTextSlugs } from './vault-notes.js';
+import { claimFileContextInjection, claimVaultNoteDelivery, claimVaultNoteText, claimVaultNoteTitle, hasVaultNoteDelivery } from './file-context-dedupe.js';
+import { getGoverningVaultNotes, formatVaultNotes, shownVaultSlugs, vaultListSlugs, vaultTextSlugs } from './vault-notes.js';
 
 const FILE_READ_GATE_MIN_BYTES = 1_500;
 
@@ -201,13 +201,18 @@ export const fileContextHandler: EventHandler = {
         )
       : [];
     const vaultNotes = (await withDeadline(vaultNotesPromise, deadline, [])).flat();
-    // AK13: the text of a note goes to (session, agent) once. Text claims come
-    // only now, after every file claim above was won: an instance that lost the
-    // file claim returned [] and sets none.
-    // ponytail: a claimed text that the 9000-char fit then cuts away is not re-offered.
+    // A note is named to (session, agent) once per segment (compaction resets):
+    // its text in rank 1–3 once, its title in the ranked list once, and never as
+    // a title after its text. A note already named is left out. Claims come only
+    // now, after every file claim above was won: an instance that lost the file
+    // claim returned [] and sets none. Texts first: they lock out the titles.
+    // ponytail: a claimed text or title that the 9000-char fit then cuts away is not re-offered.
+    const agentId = input.agentId ?? '';
     const textAllowed = new Set(vaultTextSlugs(vaultNotes).filter(
-      slug => claimVaultNoteText(input.sessionId, input.agentId ?? '', slug)));
-    const vaultBlock = formatVaultNotes(vaultNotes, textAllowed);
+      slug => claimVaultNoteText(input.sessionId, agentId, slug)));
+    const titleAllowed = new Set(vaultListSlugs(vaultNotes).filter(
+      slug => claimVaultNoteTitle(input.sessionId, agentId, slug)));
+    const vaultBlock = formatVaultNotes(vaultNotes, textAllowed, titleAllowed);
     const timelines: string[] = [];
 
     timelineResults.forEach((result, index) => {

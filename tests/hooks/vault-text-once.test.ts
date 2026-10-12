@@ -131,49 +131,44 @@ afterAll(() => {
   mock.module('../../src/utils/project-filter.js', () => realProjectFilterSnapshot);
 });
 
-const ALREADY = ' — Text schon geliefert';
+const EMPTY = { continue: true, suppressOutput: true };
 
+// Since the once-per-segment rule (backlog vault-notizen-je-datei-wiederholen-titel-und-rangliste,
+// Julius 2026-10-12) a note whose text was delivered is left out entirely instead of standing as a
+// title line "— Text schon geliefert"; a block with nothing new is no block. The expectations below
+// changed accordingly; what each test protects (text once per session and agent) is unchanged.
 describe('vault text once — AK13', () => {
-  it('AK13 dieselbe Notiz in einem zweiten Block trägt keinen Text, nur die Titelzeile mit dem Zusatz', async () => {
+  it('AK13 dieselbe Notiz erscheint in einem zweiten Block nicht mehr, auch nicht als Titelzeile', async () => {
     setVault({ 'a.py': [note('p'), note('q'), note('r')], 'b.py': [note('p'), note('q'), note('r')] });
     const first = (await blockOf('a.py'))!;
     expect(first).toContain('Text von p');
-    const second = (await blockOf('b.py'))!;
-    expect(second).not.toContain('Text von');
-    expect(second).not.toContain('Entschieden:');
-    for (const s of ['p', 'q', 'r']) {
-      expect(second).toContain(`[[${s}]] — Titel ${s} (decision, verified —)${ALREADY}`);
-    }
-    expect(second.split('\n').filter(l => l.startsWith('[['))).toHaveLength(3); // Rang und Zahl unverändert
+    expect(await touch('b.py')).toEqual(EMPTY);
   });
 
   it('AK13 eine neue Notiz bekommt ihren Text beim ersten Mal', async () => {
     setVault({ 'a.py': [note('p')], 'b.py': [note('p'), note('n')] });
     await blockOf('a.py');
     const second = (await blockOf('b.py'))!;
-    expect(second).toContain(`[[p]] — Titel p (decision, verified —)${ALREADY}`);
+    expect(second).not.toContain('[[p]]');
     expect(second).toContain('[[n]] — Titel n (decision, verified —)\n  Entschieden:\n    Text von n');
     expect(second).not.toContain('Text von p');
-    expect(second).not.toContain(`[[n]] — Titel n (decision, verified —)${ALREADY}`);
   });
 
   it('AK13 das Text-Protokoll gilt je Sitzung und Agent', async () => {
     setVault({ 'a.py': [note('p')], 'b.py': [note('p')], 'c.py': [note('p')], 'd.py': [note('p')] });
     expect(await blockOf('a.py')).toContain('Text von p');
-    expect(await blockOf('b.py')).not.toContain('Text von p');
+    expect(await touch('b.py')).toEqual(EMPTY);
     expect(await blockOf('c.py', { sessionId: 'andere' })).toContain('Text von p');
     expect(await blockOf('c.py', { agentId: 'sub-1' })).toContain('Text von p');
-    expect(await blockOf('d.py', { agentId: 'sub-1' })).not.toContain('Text von p'); // Subagent: einmal
+    expect(await touch('d.py', { agentId: 'sub-1' })).toEqual(EMPTY); // Subagent: einmal
   });
 
   it('AK13 parallele Reads auf zwei Dateien mit derselben Notiz: der Text erscheint genau einmal', async () => {
     setVault({ 'a.py': [note('p')], 'b.py': [note('p')] });
     const [x, y] = await Promise.all([blockOf('a.py'), blockOf('b.py')]);
-    expect(x).toBeDefined();
-    expect(y).toBeDefined();
-    expect(count(x! + y!, 'Text von p')).toBe(1);
-    expect(count(x! + y!, '[[p]]')).toBe(2);
-    expect(count(x! + y!, ALREADY)).toBe(1);
+    expect([x, y].filter(Boolean)).toHaveLength(1); // the other block had nothing new
+    expect(count((x ?? '') + (y ?? ''), 'Text von p')).toBe(1);
+    expect(count((x ?? '') + (y ?? ''), '[[p]]')).toBe(1);
   });
 
   it('AK13 der Pfad steht einmal im Kopf und nicht je Zeile', async () => {
@@ -193,7 +188,8 @@ describe('vault text once — AK13', () => {
     await blockOf('a.py');
     const tables = query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
       .map(r => r.name).sort();
-    expect(tables).toEqual(['file_context_injections', 'vault_note_deliveries', 'vault_note_texts']);
+    // vault_note_titles came with the title protocol (once per segment); slugs only, like the others.
+    expect(tables).toEqual(['file_context_injections', 'vault_note_deliveries', 'vault_note_texts', 'vault_note_titles']);
     const texts = query('SELECT * FROM vault_note_texts');
     expect(texts.map(r => r.slug).sort()).toEqual(['p', 'q']);
     expect(Object.keys(texts[0]).sort()).toEqual(['agent_id', 'delivered_at_epoch', 'session_id', 'slug']);
@@ -207,7 +203,7 @@ describe('vault text once — AK13', () => {
     setVault({ 'a.py': [note('p')], 'b.py': [note('p')] });
     await blockOf('a.py');
     await blockOf('a.py', { agentId: 'sub-1' });
-    expect(await blockOf('b.py')).not.toContain('Text von p');
+    expect(await touch('b.py')).toEqual(EMPTY);
     await resetVaultNoteDeliveries('s1');
     expect(query("SELECT * FROM vault_note_texts WHERE session_id='s1' AND agent_id=''")).toHaveLength(0);
     expect(query("SELECT * FROM vault_note_texts WHERE agent_id='sub-1'")).toHaveLength(1); // Subagent behält
@@ -229,7 +225,7 @@ describe('vault text once — AK13', () => {
       ...n.text.split('\n').map(l => `    ${l}`)])].join('\n');
     setVault({ 'a.py': notes, 'b.py': notes, 'c.py': notes });
     let neu = 0;
-    for (const f of ['a.py', 'b.py', 'c.py']) neu += (await blockOf(f))!.length;
+    for (const f of ['a.py', 'b.py', 'c.py']) neu += (await blockOf(f) ?? '').length; // b, c: no block
     expect(neu).toBeLessThanOrEqual(oldBlock.length * 3 * 0.7);
   });
 
@@ -240,7 +236,7 @@ describe('vault text once — AK13', () => {
     const viaEdit = (await blockOf('b.py', { toolName: 'Edit' }))!;
     const viaSub = (await blockOf('b.py', { agentId: 'sub-1' }))!;
     expect(viaEdit).toBe(viaSub);
-    expect(viaEdit).toContain(`[[p]] — Titel p (decision, verified —)${ALREADY}`);
+    expect(viaEdit).not.toContain('[[p]]');
     expect(viaEdit).toContain('Text von s');
     expect(viaEdit).not.toContain('Text von p');
   });

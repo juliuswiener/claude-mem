@@ -17,7 +17,6 @@ export const VAULT_DIGEST_TEXT_CHARS = 700;
 export const VAULT_DIGEST_LIST_LIMIT = 8;
 const VAULT_DIGEST_FILE_NAMES = 3;
 const CUT_MARKER = '[… gekürzt]';
-const TEXT_DELIVERED = ' — Text schon geliefert';
 const VAULT_TIMEOUT_MS = 2_000;
 const VAULT_BROAD_TIMEOUT_MS = 3_000;
 const VAULT_TYPE_DIRS = '{decisions,architecture,audits,research}'; // where a note path is built from a slug
@@ -103,7 +102,8 @@ interface RenderConfig {
   listLimit: number;
   textChars?: number; // cut each note text to this length (with marker) before the global fit
   suffix?: (n: VaultNote) => string; // appended to the title line of a note with text
-  textAllowed?: Set<string>; // notes in the text slot outside this set get a title line only
+  textAllowed?: Set<string>; // notes in the text slot outside this set are left out
+  titleAllowed?: Set<string>; // notes in the list outside this set are left out
 }
 
 const GATE_CONFIG: RenderConfig = {
@@ -117,21 +117,23 @@ const GATE_CONFIG: RenderConfig = {
 /** Builds the block under cfg.maxChars; slugs = every note that stands in it. */
 function render(notes: VaultNote[], cfg: RenderConfig = GATE_CONFIG): Rendered | null {
   const narrow = narrowNotes(notes);
-  if (narrow.length === 0) return null;
-  const head = narrow.slice(0, cfg.noteLimit);
-  const delivered = head.map(n => cfg.textAllowed !== undefined && !cfg.textAllowed.has(n.slug));
-  const texts = head.map((n, i) => (delivered[i] ? ''
-    : cfg.textChars && n.text.length > cfg.textChars
-      ? `${n.text.slice(0, cfg.textChars)}\n${CUT_MARKER}` : n.text));
+  // Ranks stay where they are: a left-out note frees no slot for a lower one.
+  const head = narrow.slice(0, cfg.noteLimit).filter(n => !cfg.textAllowed || cfg.textAllowed.has(n.slug));
+  const listed = narrow.slice(cfg.noteLimit, cfg.noteLimit + cfg.listLimit)
+    .filter(n => !cfg.titleAllowed || cfg.titleAllowed.has(n.slug));
+  if (head.length === 0 && listed.length === 0) return null;
+  const texts = head.map(n => (cfg.textChars && n.text.length > cfg.textChars
+    ? `${n.text.slice(0, cfg.textChars)}\n${CUT_MARKER}` : n.text));
   const root = vaultRoot(narrow);
   const header = cfg.header(root ? `ganze Notiz: ${root}/${VAULT_TYPE_DIRS}/<slug>.md` : '');
-  let list = narrow.slice(cfg.noteLimit, cfg.noteLimit + cfg.listLimit);
-  const total = narrow.length;
+  let list = listed;
+  // "und N weitere": ranks beyond the list, plus list lines the fit below drops.
+  const beyond = Math.max(0, narrow.length - cfg.noteLimit - cfg.listLimit);
 
   const build = () => {
     const lines = [header];
     head.forEach((n, i) => {
-      lines.push(titleLine(n) + (cfg.suffix?.(n) ?? '') + (delivered[i] ? TEXT_DELIVERED : ''));
+      lines.push(titleLine(n) + (cfg.suffix?.(n) ?? ''));
       if (texts[i]) {
         if (n.section) lines.push(`  ${n.section}:`);
         for (const l of texts[i].split('\n')) lines.push(`    ${l}`);
@@ -141,7 +143,7 @@ function render(notes: VaultNote[], cfg: RenderConfig = GATE_CONFIG): Rendered |
       lines.push(cfg.listHeader);
       for (const n of list) lines.push(titleLine(n));
     }
-    const rest = total - head.length - list.length;
+    const rest = beyond + listed.length - list.length;
     if (rest > 0) lines.push(`und ${rest} weitere`);
     return lines.join('\n');
   };
@@ -179,13 +181,18 @@ export function vaultTextSlugs(notes: VaultNote[]): string[] {
   return narrowNotes(notes).slice(0, VAULT_NOTE_LIMIT).map(n => n.slug);
 }
 
+/** Slugs of the notes that stand in the ranked list (the next VAULT_LIST_LIMIT). */
+export function vaultListSlugs(notes: VaultNote[]): string[] {
+  return narrowNotes(notes).slice(VAULT_NOTE_LIMIT, VAULT_NOTE_LIMIT + VAULT_LIST_LIMIT).map(n => n.slug);
+}
+
 /**
  * Format notes as a text block, or null when nothing (non-broad) is left.
  * textAllowed: slugs whose text may be delivered; a text-slot note outside it
- * shows as a title line only. Undefined = every text-slot note carries text.
+ * is left out. titleAllowed: the same for the ranked list. Undefined = no filter.
  */
-export function formatVaultNotes(notes: VaultNote[], textAllowed?: Set<string>): string | null {
-  return render(notes, { ...GATE_CONFIG, textAllowed })?.text ?? null;
+export function formatVaultNotes(notes: VaultNote[], textAllowed?: Set<string>, titleAllowed?: Set<string>): string | null {
+  return render(notes, { ...GATE_CONFIG, textAllowed, titleAllowed })?.text ?? null;
 }
 
 export interface DigestFile { file: string; notes: VaultNote[]; seen: string[] }

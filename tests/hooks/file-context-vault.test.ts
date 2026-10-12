@@ -368,8 +368,14 @@ describe('fileContextHandler — AK4 Sitzungsprotokoll der Vault-Notizen', () =>
     const other = join(tmpDir, 'other.md');
     writeFileSync(other, PADDING);
     await at({});
-    // AK13: dieselbe Notiz, zweite Datei: Titelzeile mit Zusatz statt Text.
-    expect((await at({}, other)).hookSpecificOutput!.additionalContext).toBe(`${VAULT_BLOCK} — Text schon geliefert`);
+    // Once per segment (backlog vault-notizen-je-datei-wiederholen-titel-und-rangliste): the same
+    // note on a second file is not named again; before, it stood there as "— Text schon geliefert".
+    expect(await at({}, other)).toEqual(silent);
+    // The file protocol itself does not silence another file: a note it has not named comes.
+    const third = join(tmpDir, 'third.md');
+    writeFileSync(third, PADDING);
+    setVaultNotes([note('andere')]);
+    expect((await at({}, third)).hookSpecificOutput!.additionalContext).toContain('[[andere]]');
   });
 
   it('AK4 andere Sitzung liefert wieder', async () => {
@@ -537,7 +543,8 @@ describe('fileContextHandler — AK5/AK6 mit Vault-Attrappe', () => {
     let dump = '';
     for (const t of tables) dump += JSON.stringify(db.query(`SELECT * FROM "${t}"`).all());
     db.close();
-    expect(tables).toEqual(['file_context_injections', 'vault_note_deliveries', 'vault_note_texts']); // vorher nur die Timeline-Tabelle
+    // vorher nur die Timeline-Tabelle; vault_note_titles seit dem Titel-Protokoll (einmal je Segment)
+    expect(tables).toEqual(['file_context_injections', 'vault_note_deliveries', 'vault_note_texts', 'vault_note_titles']);
     expect(dump).toContain('regel');
     expect(dump).not.toContain('GEHEIMER-TITEL');
   });
@@ -634,8 +641,10 @@ describe('fileContextHandler — AK5/AK6 gegen den echten Vault-Befehl', () => {
 
     expect(await blockOf({ sessionId: 'ak6' })).toContain('[[aktiv]]');
     const after = tables();
-    expect(after.filter(t => !before.includes(t)).sort()).toEqual(['vault_note_deliveries', 'vault_note_texts']);
-    expect(after.sort()).toEqual([...before, 'vault_note_deliveries', 'vault_note_texts'].sort());
+    // vault_note_titles seit dem Titel-Protokoll (einmal je Segment); nur Slugs, wie die anderen.
+    const added = ['vault_note_deliveries', 'vault_note_texts', 'vault_note_titles'];
+    expect(after.filter(t => !before.includes(t)).sort()).toEqual(added);
+    expect(after.sort()).toEqual([...before, ...added].sort());
 
     const db = new Database(dbPath, { readonly: true });
     let dump = '';
