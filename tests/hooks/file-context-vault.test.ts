@@ -973,3 +973,55 @@ describe('Kopfzeile nennt Baustand und Alter der Notiz (AK11 bis AK13)', () => {
     expect(ctx).toContain('Vorgeschichte (Stand 2026-01-10');
   });
 });
+
+describe('Kopfzeile nennt tote applies_to-Muster der Notiz (AK7 des Eintrags entscheidungen-ohne-lebenden-code)', () => {
+  const BASE = '[[regel]] — Titel regel (decision, verified —)';
+  const VERMERK = '1 von 2 Mustern treffen nichts';
+  const withNote = (extra: Record<string, unknown> = {}) =>
+    note('regel', { section: 'Entschieden', text: 'Beschluss.', ...extra }) as any;
+  const block = (notes: unknown[]) => formatVaultNotes(notes as any)!;
+  const headerOf = (b: string, slug = 'regel') => b.split('\n').find(l => l.startsWith(`[[${slug}]]`))!;
+  const PLAIN = `Vault-Notizen, die diese Datei regieren:\n${BASE}\n  Entschieden:\n    Beschluss.`;
+
+  it('die Kopfzeile nennt, wie viele von den Mustern nichts treffen', () => {
+    const h = headerOf(block([withNote({ tote_muster: { tot: 1, von: 2 } })]));
+    expect(h).toBe(`${BASE} — ${VERMERK}`);
+  });
+
+  it('der Vermerk steht nach Baustand und Alter', () => {
+    const h = headerOf(block([withNote({
+      baustand: 'gebaut', erledigt_in: 'abc1234',
+      alter: { seit: '2026-01-10', commits: 2 }, tote_muster: { tot: 1, von: 2 },
+    })]));
+    expect(h).toBe(`${BASE} — gebaut, erledigt in abc1234 — 2 Commits auf diesen Pfaden seit 2026-01-10 — ${VERMERK}`);
+  });
+
+  it('treffen alle Muster nichts, steht trotzdem k von n (die Datei im Gate existiert)', () => {
+    const h = headerOf(block([withNote({ tote_muster: { tot: 2, von: 2 } })]));
+    expect(h).toContain('2 von 2 Mustern treffen nichts');
+    expect(h).not.toContain('Gegenstand nicht auffindbar');
+  });
+
+  it('auch die Titelzeile einer Notiz in der Rangliste trägt den Vermerk', () => {
+    const b = block([withNote(), note('n2'), note('n3'), note('n4', { tote_muster: { tot: 1, von: 3 } })]);
+    expect(headerOf(b, 'n4')).toContain('1 von 3 Mustern treffen nichts');
+  });
+
+  it('ohne das Feld oder mit ungültigem Wert bleibt der Block Byte für Byte wie vorher', () => {
+    expect(block([withNote()])).toBe(PLAIN);
+    for (const bad of [
+      { tot: 0, von: 2 }, { tot: -1, von: 2 }, { tot: 3, von: 2 }, { tot: 1.5, von: 2 },
+      { tot: 1, von: 2.5 }, { tot: '1', von: 2 }, { tot: 1, von: '2' }, { tot: 1 }, { von: 2 },
+      null, 'viele', 7, [],
+    ]) {
+      expect(block([withNote({ tote_muster: bad })])).toBe(PLAIN);
+    }
+  });
+
+  it('Ende zu Ende: das Feld des Vault-Befehls erreicht die Kopfzeile im Gate', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(noObservations());
+    setVaultNotes([withNote({ tote_muster: { tot: 1, von: 2 } })]);
+    const ctx = (await read()).hookSpecificOutput!.additionalContext!;
+    expect(ctx).toContain(`${BASE} — ${VERMERK}`);
+  });
+});
