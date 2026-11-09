@@ -37,6 +37,7 @@ export interface VaultNote {
   offene_umsetzung?: string; // Slug des ältesten offenen Eintrags
   offene_anzahl?: number;
   alter?: { seit: string; commits: number };
+  tote_muster?: { tot: number; von: number }; // Muster in applies_to, die keine versionierte Datei mehr treffen
 }
 
 function run(cmd: string, args: string[], timeoutMs: number): Promise<string | null> {
@@ -100,7 +101,14 @@ function noteAge(n: VaultNote): { seit: string; commits: number } | null {
   return Number.isInteger(a.commits) && a.commits >= 0 ? a : null;
 }
 
-/** Build state and age for the header; anything missing or malformed stays out. */
+/** `tote_muster` of a note, or null unless it is a count the header may print (0 < tot <= von). */
+function deadPatterns(n: VaultNote): { tot: number; von: number } | null {
+  const t = n.tote_muster;
+  if (!t || !Number.isInteger(t.tot) || !Number.isInteger(t.von)) return null;
+  return t.tot > 0 && t.tot <= t.von ? t : null;
+}
+
+/** Build state, age and dead patterns for the header; anything missing or malformed stays out. */
 function standParts(n: VaultNote): string[] {
   const parts: string[] = [];
   const done = oneLine(n.erledigt_in);
@@ -117,6 +125,9 @@ function standParts(n: VaultNote): string[] {
       ? `unverändert seit ${age.seit}`
       : `${age.commits} Commit${age.commits === 1 ? '' : 's'} auf diesen Pfaden seit ${age.seit}`);
   }
+  // Always "k von n": a file in the gate matched a pattern, so "Gegenstand nicht auffindbar" would be false here.
+  const dead = deadPatterns(n);
+  if (dead) parts.push(`${dead.tot} von ${dead.von} Mustern treffen nichts`);
   return parts;
 }
 
