@@ -31,6 +31,12 @@ export interface VaultNote {
   path: string;
   section: string;
   text: string;
+  // Rechnet `bin/context`; fehlt ein Feld, hat der Vault nichts zu sagen (kein "unbekannt").
+  baustand?: string; // "gebaut" | "offen"
+  erledigt_in?: string; // Freitext, bis 372 Zeichen
+  offene_umsetzung?: string; // Slug des ältesten offenen Eintrags
+  offene_anzahl?: number;
+  alter?: { seit: string; commits: number };
 }
 
 function run(cmd: string, args: string[], timeoutMs: number): Promise<string | null> {
@@ -84,7 +90,47 @@ function narrowNotes(notes: VaultNote[]): VaultNote[] {
   });
 }
 
-const titleLine = (n: VaultNote) => `[[${n.slug}]] — ${n.title} (${n.type}, verified ${n.verified || '—'})`;
+const DONE_MAX_CHARS = 80; // erledigt_in is free text: the hash leads, the rest is cut
+const oneLine = (v: unknown) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '');
+
+/** `alter` of a note, or null unless it is a date and a count the header may print. */
+function noteAge(n: VaultNote): { seit: string; commits: number } | null {
+  const a = n.alter;
+  if (!a || typeof a.seit !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(a.seit)) return null;
+  return Number.isInteger(a.commits) && a.commits >= 0 ? a : null;
+}
+
+/** Build state and age for the header; anything missing or malformed stays out. */
+function standParts(n: VaultNote): string[] {
+  const parts: string[] = [];
+  const done = oneLine(n.erledigt_in);
+  const open = oneLine(n.offene_umsetzung);
+  if (n.baustand === 'gebaut') {
+    parts.push(done ? `gebaut, erledigt in ${done.length > DONE_MAX_CHARS ? `${done.slice(0, DONE_MAX_CHARS)}…` : done}` : 'gebaut');
+  } else if (n.baustand === 'offen' && open) {
+    const more = Number.isInteger(n.offene_anzahl) && n.offene_anzahl! > 1 ? ` (und ${n.offene_anzahl! - 1} weitere)` : '';
+    parts.push(`Umsetzung offen: ${open}${more}`);
+  }
+  const age = noteAge(n);
+  if (age) {
+    parts.push(age.commits === 0
+      ? `unverändert seit ${age.seit}`
+      : `${age.commits} Commit${age.commits === 1 ? '' : 's'} auf diesen Pfaden seit ${age.seit}`);
+  }
+  return parts;
+}
+
+/** Label of the text block when paths changed since the note was checked: the text is history, dated. */
+function historyLabel(n: VaultNote): string {
+  const age = noteAge(n);
+  return age && age.commits > 0
+    ? `Vorgeschichte (Stand ${age.seit} — der Beschluss gilt; Pfade, Zeilen und Zahlen gelten für damals)` : '';
+}
+
+const titleLine = (n: VaultNote) => {
+  const stand = standParts(n);
+  return `[[${n.slug}]] — ${n.title} (${n.type}, verified ${n.verified || '—'})${stand.length ? ` — ${stand.join(' — ')}` : ''}`;
+};
 
 interface Rendered { text: string; slugs: string[] }
 
@@ -135,7 +181,8 @@ function render(notes: VaultNote[], cfg: RenderConfig = GATE_CONFIG): Rendered |
     head.forEach((n, i) => {
       lines.push(titleLine(n) + (cfg.suffix?.(n) ?? ''));
       if (texts[i]) {
-        if (n.section) lines.push(`  ${n.section}:`);
+        const label = [n.section, historyLabel(n)].filter(Boolean).join(' — ');
+        if (label) lines.push(`  ${label}:`);
         for (const l of texts[i].split('\n')) lines.push(`    ${l}`);
       }
     });
