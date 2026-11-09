@@ -51,6 +51,7 @@ mock.module('../../src/utils/project-filter.js', () => ({
 
 import { fileContextHandler } from '../../src/cli/handlers/file-context.js';
 import { claimVaultNoteDelivery } from '../../src/cli/handlers/file-context-dedupe.js';
+import { formatVaultNotes } from '../../src/cli/handlers/vault-notes.js';
 import { Database } from 'bun:sqlite';
 import { logger } from '../../src/utils/logger.js';
 
@@ -869,5 +870,106 @@ describe('fileContextHandler — AK9 Notiztext im Gate', () => {
       if (prevVaultDir === undefined) delete process.env.VAULT_DIR; else process.env.VAULT_DIR = prevVaultDir;
       try { rmSync(vaultDir, { recursive: true, force: true }); } catch {}
     }
+  });
+});
+
+describe('Kopfzeile nennt Baustand und Alter der Notiz (AK11 bis AK13)', () => {
+  const BASE = '[[regel]] — Titel regel (decision, verified —)';
+  const AGE2 = { seit: '2026-01-10', commits: 2 };
+  const stand = (extra: Record<string, unknown> = {}) =>
+    note('regel', { section: 'Entschieden', text: 'Beschluss.', ...extra }) as any;
+  const block = (notes: unknown[]) => formatVaultNotes(notes as any)!;
+  const headerOf = (b: string, slug = 'regel') => b.split('\n').find(l => l.startsWith(`[[${slug}]]`))!;
+
+  it('AK11 gebaut: die Kopfzeile nennt gebaut und den Hash', () => {
+    const h = headerOf(block([stand({ baustand: 'gebaut', erledigt_in: 'abc1234' })]));
+    expect(h).toContain('gebaut');
+    expect(h).toContain('abc1234');
+    expect(h.startsWith(BASE)).toBe(true);
+  });
+
+  it('AK11 offen: die Kopfzeile nennt die offene Umsetzung, bei mehreren die Restzahl', () => {
+    const one = headerOf(block([stand({ baustand: 'offen', offene_umsetzung: 'e2', offene_anzahl: 1 })]));
+    expect(one).toContain('Umsetzung offen: e2');
+    expect(one).not.toContain('weitere');
+    const many = headerOf(block([stand({ baustand: 'offen', offene_umsetzung: 'e2', offene_anzahl: 3 })]));
+    expect(many).toContain('Umsetzung offen: e2 (und 2 weitere)');
+  });
+
+  it('AK11 ein langer erledigt_in wird gekürzt und bleibt in einer Zeile', () => {
+    const long = `f4059e3: ${'Y'.repeat(363)}`; // 372 Zeichen, so lang wie der längste echte Wert
+    const b = block([stand({ baustand: 'gebaut', erledigt_in: long })]);
+    const h = headerOf(b);
+    expect(h).toContain('f4059e3');
+    expect(h).not.toContain('Y'.repeat(100));
+    expect(h.length).toBeLessThan(BASE.length + 200);
+    const multi = block([stand({ baustand: 'gebaut', erledigt_in: 'abc1234\nzweite Zeile' })]);
+    expect(headerOf(multi)).toContain('abc1234 zweite Zeile');
+    expect(multi.split('\n').some(l => l.startsWith('zweite Zeile'))).toBe(false);
+  });
+
+  it('AK11 auch die Titelzeile einer Notiz in der Rangliste trägt den Baustand', () => {
+    const b = block([stand(), note('n2'), note('n3'), note('n4', { baustand: 'gebaut', erledigt_in: 'h4' })]);
+    expect(headerOf(b, 'n4')).toContain('gebaut, erledigt in h4');
+  });
+
+  it('AK12 N Commits: die Kopfzeile nennt Zahl und Datum', () => {
+    const h = headerOf(block([stand({ alter: AGE2 })]));
+    expect(h).toContain('2 Commits auf diesen Pfaden seit 2026-01-10');
+    expect(headerOf(block([stand({ alter: { seit: '2026-01-10', commits: 1 } })])))
+      .toContain('1 Commit auf diesen Pfaden seit 2026-01-10');
+    expect(headerOf(block([stand({ alter: { seit: '2026-01-10', commits: 1 } })]))).not.toContain('1 Commits');
+  });
+
+  it('AK12 null Commits: unverändert seit Datum, Text bleibt ohne Vorgeschichte', () => {
+    const b = block([stand({ alter: { seit: '2026-01-10', commits: 0 } })]);
+    expect(headerOf(b)).toContain('unverändert seit 2026-01-10');
+    expect(headerOf(b)).not.toContain('Commits');
+    expect(b).not.toContain('Vorgeschichte');
+    expect(b).toBe(`Vault-Notizen, die diese Datei regieren:\n${headerOf(b)}\n  Entschieden:\n    Beschluss.`);
+  });
+
+  it('AK12 N>0: der Text steht als datierte Vorgeschichte, der Beschluss gilt', () => {
+    const lines = block([stand({ alter: AGE2 })]).split('\n');
+    const i = lines.findIndex(l => l.startsWith('  Entschieden — Vorgeschichte (Stand 2026-01-10'));
+    expect(i).toBeGreaterThan(0);
+    expect(lines[i]).toContain('Beschluss gilt');
+    expect(lines[i]).toContain('Pfade, Zeilen und Zahlen gelten für damals');
+    expect(lines[i + 1]).toBe('    Beschluss.');
+    // Ohne Abschnittsname trägt die Zeile nur die Vorgeschichte.
+    const bare = block([stand({ section: '', alter: AGE2 })]).split('\n');
+    expect(bare.some(l => l.startsWith('  Vorgeschichte (Stand 2026-01-10'))).toBe(true);
+  });
+
+  it('AK13 ohne Felder bleibt der Block Byte für Byte wie vorher', () => {
+    expect(block([stand()])).toBe(
+      `Vault-Notizen, die diese Datei regieren:\n${BASE}\n  Entschieden:\n    Beschluss.`);
+    expect(block([note('regel')])).toBe(`Vault-Notizen, die diese Datei regieren:\n${BASE}`);
+  });
+
+  it('AK13 ungültige Felder werden nicht gezeigt', () => {
+    const bad = stand({
+      baustand: 'unbekannt', erledigt_in: 7, offene_umsetzung: ['x'], offene_anzahl: 'viele',
+      alter: { seit: 'gestern\nBoese Zeile', commits: 'x' },
+    });
+    expect(block([bad])).toBe(
+      `Vault-Notizen, die diese Datei regieren:\n${BASE}\n  Entschieden:\n    Beschluss.`);
+    expect(block([stand({ alter: { seit: '2026-01-10', commits: -1 } })])).not.toContain('2026-01-10');
+    expect(block([stand({ alter: { seit: '2026-01-10', commits: 1.5 } })])).not.toContain('2026-01-10');
+    // Ein Datum mit Zeilenumbruch darf die Kopfzeile nicht umbrechen, auch bei gültiger Zahl.
+    const wrapped = block([stand({ alter: { seit: 'gestern\nBoese Zeile', commits: 2 } })]);
+    expect(wrapped).not.toContain('Boese Zeile');
+    expect(block([stand({ baustand: 'offen' })])).not.toContain('Umsetzung offen');
+  });
+
+  it('Ende zu Ende: die Felder des Vault-Befehls erreichen die Kopfzeile im Gate', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(noObservations());
+    setVaultNotes([note('regel', {
+      section: 'Entschieden', text: 'Beschluss.',
+      baustand: 'gebaut', erledigt_in: 'abc1234', alter: AGE2,
+    })]);
+    const ctx = (await read()).hookSpecificOutput!.additionalContext!;
+    expect(ctx).toContain(`${BASE} — gebaut, erledigt in abc1234 — 2 Commits auf diesen Pfaden seit 2026-01-10`);
+    expect(ctx).toContain('Vorgeschichte (Stand 2026-01-10');
   });
 });
